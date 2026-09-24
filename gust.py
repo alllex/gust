@@ -26,7 +26,9 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
+import tempfile
 import time
 import tomllib
 from dataclasses import dataclass, field
@@ -34,13 +36,16 @@ from pathlib import Path
 
 __version__ = "10"
 
+WINDOWS = os.name == "nt"
+
 EXIT_OK = 0          # every step as expected
 EXIT_DEVIATED = 1    # a run step deviated; the run stopped there
 EXIT_ERROR = 2       # bad input, or a step that could not be carried out
 
 # --- the out dir and the .gust cache
 MARKER = ".gust-run"            # marks an out dir as made by gust, so it may be removed and recreated
-TMP_ROOT = Path("/tmp")          # --tmp: /tmp/gust-<yymmdd>/<stem>.<HHMMSS>.out
+TMP_ROOT = Path(tempfile.gettempdir() if WINDOWS else "/tmp")   # --tmp: /tmp/gust-<yymmdd>/<stem>.<HHMMSS>.out
+TMP_SHAPE = TMP_ROOT / "gust-<yymmdd>" / "<stem>.<HHMMSS>.out"
 INSTALL_LOG = "install-wrapper.log"
 WRAPPER_LABEL = "[WRP]"
 GUST_DIR_ENV = "GUST_DIR"        # where .gust goes (default: <working dir>/.gust)
@@ -51,7 +56,9 @@ REMOTES_DIR = "remotes"                   # in .gust: one checkout per remote
 GRADLE_ENV = "GRADLE"            # for shell steps: the Gradle binary
 GRADLE_USER_HOME_ENV = "GRADLE_USER_HOME"
 GRADLE_ARGS_ENV = "GRADLE_ARGS"  # for shell steps: the arguments after --, shell-quoted
-WRAPPER = "./gradlew"
+WRAPPER = "./gradlew.bat" if WINDOWS else "./gradlew"   # the project's own wrapper, relative to the project dir
+WRAPPER_FILE = WRAPPER[2:]
+RUNNABLE_SUFFIXES = (".exe", ".bat", ".cmd", ".com")      # on Windows, what a file needs to be run
 
 # --- the scenario file's vocabulary
 TOP_KEYS = {"name", "description", "setup", "steps"}
@@ -168,7 +175,8 @@ steps[].run.gradle                  Gradle with these arguments, run in the proj
   expect        string|table optional  see steps[].run.*.expect; default "pass"
 
 steps[].run.shell                   a command run through sh in the project dir, with $GRADLE set
-                                    to the Gradle binary and $GRADLE_ARGS to the arguments after --
+                                    to the Gradle binary and $GRADLE_ARGS to the arguments after --;
+                                    on Windows through the bash of Git for Windows (see Windows)
   shorthand     run.shell = "cmd"     means { command = "cmd", expect = "pass" }
   command       string   required   the command
   expect        string|table optional  see steps[].run.*.expect; default "pass"
@@ -176,7 +184,8 @@ steps[].run.shell                   a command run through sh in the project dir,
 steps[].run.*.expect                what must hold after the step; every listed check counts
   shorthand     expect = "fail"       means { exit = "fail" }
   exit          string   optional   "pass" (default, exit code 0) or "fail" (any other exit code)
-  output        array    optional   strings that must each appear in the step's combined output
+  output        array    optional   strings that must each appear in the step's combined output,
+                                    where a CRLF line end reads as LF
   no_output     array    optional   strings that must not appear in it
 
 steps[].edit[]
@@ -418,6 +427,19 @@ ran. Neither counts as an [i/N] step. A stop reaches every daemon of that Gradle
 version and user home, not only the ones started for this project; Gradle has
 no per-project daemon registry, so this is as close as it gets.
 
+Windows
+=======
+
+On Windows the project's wrapper is gradlew.bat: read ./gradlew.bat for
+./gradlew wherever it appears here, --gradle included, which takes
+.\\gradlew.bat as the same. A Gradle command runs without a shell: its
+arguments are split as sh splits them, quotes included, with nothing expanded,
+and the binary is looked up in the project dir or on PATH (gradle is found as
+gradle.bat). Shell steps run with the bash of Git for Windows, bin\\bash.exe in
+the install that git on PATH comes from, so one scenario file works on every
+system; any other bash on PATH, such as WSL's, is not used. The --tmp root is
+the temp dir in place of /tmp.
+
 Preconditions
 =============
 
@@ -441,6 +463,8 @@ scenario's path (or stdin).
   - With setup.layout.remote: git is on PATH and the link has a supported form.
     The checkout is fetched (or its HEAD compared) before the out dir is
     touched, and edit targets are checked against it.
+  - On Windows, with a shell step to run: the bash of Git for Windows, found
+    from git on PATH.
   - With a Gradle version in play: gradle is on PATH to install its wrapper,
     and the layout or the remote checkout holds a settings file. The install
     itself happens after setup; if the wrapper task fails, the run ends as an
@@ -809,7 +833,7 @@ def _expect_keys(table: dict, where: str, allowed: set[str]) -> None:
 
 def _check_relative_path(path: str, where: str) -> None:
     p = Path(path)
-    if not path or p.is_absolute() or ".." in p.parts:
+    if not path or p.anchor or ".." in p.parts:       # an anchor is a root or a drive: "/", on Windows also "\" or "C:"
         raise GustError(f"{where}: path must be relative and must not contain '..'")
 
 
@@ -841,9 +865,18 @@ def prepare_out(out_dir: Path) -> None:
     """
     if out_dir.exists():
         _ours_or_empty(out_dir, "out dir")
-        shutil.rmtree(out_dir)
+        rmtree(out_dir)
     out_dir.mkdir(parents=True)
     (out_dir / MARKER).write_text(MARKER_TEXT, encoding="utf-8")
+
+
+def rmtree(path: Path, ignore_errors: bool = False) -> None:
+    """shutil.rmtree, with every file made writable first on Windows, where git's object files are read-only
+    and could not be removed otherwise."""
+    if WINDOWS:
+        for p in path.rglob("*"):
+            os.chmod(p, stat.S_IREAD | stat.S_IWRITE)
+    shutil.rmtree(path, ignore_errors=ignore_errors)
 
 
 def _ours_or_empty(path: Path, what: str) -> None:
@@ -888,7 +921,7 @@ def fetch_remote(scenario: Scenario, out=None) -> dict | None:
             if not remote.source.is_dir():
                 raise GustError(f"setup.layout.remote: {remote.subdir!r} is not a directory in the commit")
         except GustError:
-            shutil.rmtree(target, ignore_errors=True)
+            rmtree(target, ignore_errors=True)
             raise
         fetched = True
     check_file_flow(scenario, lambda rel: (remote.source / rel).is_file())
@@ -924,6 +957,43 @@ class GradleCommand:
         return f"{shlex.quote(self.binary)} {self.args}".rstrip()
 
 
+def gradle_argv(command: str, cwd: Path) -> list[str]:
+    """What a Gradle command line runs as: sh -c on POSIX. On Windows there is no sh, so the line is split as sh
+    would split it and run directly, with the binary looked up in cwd (./gradlew.bat) or on PATH (gradle.bat)."""
+    if not WINDOWS:
+        return ["/bin/sh", "-c", command]
+    try:
+        argv = shlex.split(command)
+    except ValueError as e:
+        raise GustError(f"cannot split {command!r} into arguments: {e}") from e
+    binary = argv[0]
+    argv[0] = str(cwd / binary) if binary.startswith("./") else shutil.which(binary) or binary
+    return argv
+
+
+def shell_argv(command: str) -> list[str]:
+    """What a run.shell command runs as: sh -c, and on Windows bash -c with Git for Windows' bash, so that one
+    scenario file works everywhere."""
+    return [git_bash() if WINDOWS else "/bin/sh", "-c", command]
+
+
+def git_bash(git: str | None = None) -> str:
+    """Git for Windows' bash: bin/bash.exe in the install that git (by default, git from PATH) belongs to.
+    A bash from PATH is not taken, since on Windows that can be WSL's."""
+    git = git or shutil.which("git")
+    for parent in Path(git).resolve().parents if git else ():
+        if (parent / "bin" / "bash.exe").is_file():
+            return str(parent / "bin" / "bash.exe")
+    raise GustError("shell steps on Windows run with the bash of Git for Windows, but "
+                    + (f"there is no bin\\bash.exe in the install of {git}" if git else "no git is on PATH"))
+
+
+def _check_shell(steps) -> None:
+    """Find the shell for the shell steps among these, if any, before the out dir is touched."""
+    if any(isinstance(s, RunStep) and s.kind == "shell" for s in steps):
+        shell_argv("")
+
+
 _VERSION_LINE = re.compile(r"^Gradle (\S+)\s*$", re.M)
 
 
@@ -934,7 +1004,10 @@ def probe_gradle(binary: str, label: str, cwd: Path, user_home: Path) -> str:
     message ends with the last lines of the output. Nothing is logged.
     """
     command = GradleCommand(binary, "--version", user_home)
-    proc = subprocess.run(command.full, shell=True, cwd=cwd, capture_output=True, text=True, errors="replace")
+    try:
+        proc = subprocess.run(gradle_argv(command.full, cwd), cwd=cwd, capture_output=True, text=True, errors="replace")
+    except OSError as e:
+        raise GustError(f"{label}: cannot run '{command.shown}' ({e.strerror})") from e
     if proc.returncode != 0:
         lines = (proc.stderr or proc.stdout).strip().splitlines()
         detail = "; ".join(lines[-3:]) if lines else f"exit {proc.returncode}"
@@ -1002,7 +1075,7 @@ def settle_gradle(scenario: Scenario, cli_value: str | None, root: Path | None, 
         elif root is None and scenario.remote is not None and needed:      # check with an unfetched remote: unknown
             return GradleChoice("gradle", source, unchecked="remote not cached")
         else:                                                              # the project's own wrapper, else PATH
-            binary = WRAPPER if root is not None and os.access(root / "gradlew", os.X_OK) else "gradle"
+            binary = WRAPPER if root is not None and _executable(root / WRAPPER_FILE) else "gradle"
         label = binary if install is None else f"setup.gradle {install!r}"
     else:
         source = "cli"
@@ -1025,8 +1098,8 @@ def settle_gradle(scenario: Scenario, cli_value: str | None, root: Path | None, 
     if cli_value is None:                                                # the default must be usable
         if binary == WRAPPER and root is None and scenario.remote is not None:
             return GradleChoice(binary, source, unchecked="remote not cached")
-        if binary == WRAPPER and not exists("gradlew"):
-            raise GustError('setup.gradle = "wrapper" but gradlew is not in the layout or the remote checkout')
+        if binary == WRAPPER and not exists(WRAPPER_FILE):
+            raise GustError(f'setup.gradle = "wrapper" but {WRAPPER_FILE} is not in the layout or the remote checkout')
         if binary != WRAPPER and shutil.which(binary) is None:
             raise GustError(f"'{binary}' is not on PATH")
     if binary.startswith("./") and root is None:                         # project-relative, with nothing on disk yet
@@ -1044,24 +1117,30 @@ def _settle_binary(value: str, exists) -> tuple[str, str | None]:
     PATH or an executable in the working directory is a binary; anything else must be a version.
     """
     value = os.path.expanduser(value)
-    if os.sep in value or "/" in value:
-        if value.startswith("./"):
-            rel = str(Path(*[part for part in Path(value).parts if part != "."]))
+    if os.sep in value or "/" in value or os.path.splitdrive(value)[0]:
+        if value.startswith(("./", "." + os.sep)):
+            rel = "/".join(part for part in Path(value).parts if part != ".")   # as the layout's keys are written
             if ".." in Path(value).parts or not exists(rel):
                 raise GustError(f"--gradle {value!r} is relative to the project dir but no such file is in setup.layout.project or the remote checkout")
-            return value, None
+            return value.replace(os.sep, "/"), None                           # .\gradlew.bat as ./gradlew.bat, for bash too
         path = Path(value)
-        if not path.is_file() or not os.access(path, os.X_OK):
+        if not path.is_file() or not _executable(path):
             raise GustError(f"--gradle {value!r}: no executable at {path.resolve()}")
         return (value if path.is_absolute() else str(path.resolve())), None
-    if shutil.which(value):
+    found = shutil.which(value)
+    if found and not (WINDOWS and os.path.dirname(found) == os.curdir):   # on Windows, which() looks in the working dir first
         return value, None
-    local = Path.cwd() / value
-    if local.is_file() and os.access(local, os.X_OK):
+    local = Path(found).resolve() if found else Path.cwd() / value
+    if local.is_file() and _executable(local):
         return str(local), None
     if VERSION_RE.fullmatch(value):
         return WRAPPER, value
     raise GustError(f"--gradle {value!r}: not found on PATH and not a Gradle version such as 9.7.1")
+
+
+def _executable(path: Path) -> bool:
+    """Whether the file can be run: by its mode on POSIX, by its extension (.bat, .exe, ...) on Windows."""
+    return path.suffix.lower() in RUNNABLE_SUFFIXES if WINDOWS else os.access(path, os.X_OK)
 
 
 # --------------------------------------------------------------------------- laying out
@@ -1082,7 +1161,7 @@ def lay_out(scenario: Scenario, out_dir: Path) -> Path:
 
 def _write_file(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    path.write_text(content, encoding="utf-8", newline="")      # as written: no \r added on Windows
 
 
 def _apply_edit(project: Path, edit: Edit) -> None:
@@ -1093,7 +1172,7 @@ def _apply_edit(project: Path, edit: Edit) -> None:
     n = text.count(edit.replace)
     if n != 1:
         raise StepError(f"{edit.replace!r} occurs {n} times in {edit.file}; an edit needs exactly one")
-    path.write_text(text.replace(edit.replace, edit.with_), encoding="utf-8")
+    path.write_text(text.replace(edit.replace, edit.with_), encoding="utf-8", newline="")
 
 
 # --------------------------------------------------------------------------- running
@@ -1237,6 +1316,7 @@ def begin(run: Run, needed: bool) -> RunSummary:
 
 def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
     """Set up, stop daemons, run the steps up to the first deviation or error, and stop daemons again."""
+    _check_shell(run.scenario.steps)
     summary = begin(run, needed=stop_daemons or _needs_gradle(run.scenario.steps))
     total = len(run.scenario.steps)
     if summary.status == "error":
@@ -1275,6 +1355,7 @@ def run_steps(run: Run, numbers: list[int], scenario_ref: str = "<scenario>") ->
     for n in numbers:
         if not 1 <= n <= total:
             raise GustError(f"no step {n}; the scenario has {total} step{'s' if total != 1 else ''}")
+    _check_shell(run.scenario.steps[n - 1] for n in numbers)
     run.choice = settle_gradle(run.scenario, run.gradle, run.project, run.user_home,
                                needed=_needs_gradle(run.scenario.steps[n - 1] for n in numbers), may_install=False)
     print_header(run.scenario, run.out_dir, run.user_home, run.choice, run.out)
@@ -1310,16 +1391,16 @@ def _execute_steps(run: Run, numbers) -> tuple[list[StepResult], str]:
 def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
     if step.kind == "gradle":
         command = run.command(f"{step.command} {shlex.join(run.gradle_args)}".rstrip())   # the arguments after -- go last
-        full, shown = command.full, command.shown
+        argv, shown = gradle_argv(command.full, run.project), command.shown
     else:
-        full = shown = step.command      # shown as written
+        argv, shown = shell_argv(step.command), step.command      # shown as written
     log_rel = f"step-{index:02d}.log"
     print(f"$ {shown}", file=run.out)
     started = time.monotonic()
-    exit_code = _run_logged(full, run.project, run.env, run.out_dir / log_rel, run.out if run.show_output else None)
+    exit_code = _run_logged(argv, run.project, run.env, run.out_dir / log_rel, run.out if run.show_output else None)
     duration = time.monotonic() - started
     outcome = "pass" if exit_code == 0 else "fail"
-    output_text = (run.out_dir / log_rel).read_text(encoding="utf-8", errors="replace")
+    output_text = (run.out_dir / log_rel).read_text(encoding="utf-8", errors="replace")   # CRLF read as LF
     deviations = step.expect.deviations(exit_code, output_text)
     result = StepResult(
         index=index, kind=step.kind, name=step.label(), outcome=outcome, expect=step.expect.to_json(),
@@ -1370,7 +1451,7 @@ def _stop_daemons(run: Run, label: str, log_name: str, full: bool) -> dict:
     if full:
         print(f"$ {command.shown}", file=run.out)
     started = time.monotonic()
-    exit_code = _run_logged(command.full, run.project, dict(os.environ), run.out_dir / log_name, None)
+    exit_code = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ), run.out_dir / log_name, None)
     duration = time.monotonic() - started
     if exit_code != 0:
         print(f"ERROR: exit {exit_code} in {duration:.1f}s -> {log_name}", file=run.out)
@@ -1390,7 +1471,7 @@ def _install_wrapper(run: Run) -> dict:
     print(f"{WRAPPER_LABEL} Install Gradle wrapper {version}", file=run.out)
     print(f"$ {command.shown}", file=run.out)
     started = time.monotonic()
-    exit_code = _run_logged(command.full, run.project, dict(os.environ), run.out_dir / INSTALL_LOG,
+    exit_code = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ), run.out_dir / INSTALL_LOG,
                             run.out if run.show_output else None)
     duration = time.monotonic() - started
     if exit_code != 0:
@@ -1411,8 +1492,8 @@ def opening_rule(label: str) -> str:
     return "-" * max(RULE_WIDTH - len(tail), 5) + tail
 
 
-def _run_logged(command: str, cwd: Path, env: dict, log_path: Path, echo) -> int:
-    """Run command through the shell, stdout and stderr together into log_path, and return the exit code.
+def _run_logged(argv: list[str], cwd: Path, env: dict, log_path: Path, echo) -> int:
+    """Run argv, stdout and stderr together into log_path, and return the exit code.
 
     With echo (a text stream), each line is also written there as it arrives, between two rules.
     """
@@ -1421,7 +1502,7 @@ def _run_logged(command: str, cwd: Path, env: dict, log_path: Path, echo) -> int
         echo.flush()
     last = b"\n"
     with open(log_path, "wb") as log, subprocess.Popen(
-            command, shell=True, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as proc:
+            argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as proc:
         for line in iter(proc.stdout.readline, b""):
             log.write(line)
             last = line
@@ -1582,12 +1663,12 @@ def _tail_arg(value: str) -> int:
     return n
 
 
-PRECEDENCE = "default: setup.gradle, else the project's ./gradlew, else gradle from PATH"
-BINARY = "a Gradle binary, as a name on PATH or in the working directory, or as a path (./gradlew is relative to the project)"
+PRECEDENCE = f"default: setup.gradle, else the project's {WRAPPER}, else gradle from PATH"
+BINARY = f"a Gradle binary, as a name on PATH or in the working directory, or as a path ({WRAPPER} is relative to the project)"
 GRADLE_HELP = (f"{BINARY}, or a version such as 9.7.1, whose wrapper is installed first with gradle from PATH "
                f"(the layout needs a settings file); {PRECEDENCE}")
 BINARY_HELP = f"{BINARY}; no version, since the project is set up already; {PRECEDENCE}"
-TMP_HELP = ("put the out dir at /tmp/gust-<yymmdd>/<stem>.<HHMMSS>.out; "
+TMP_HELP = (f"put the out dir at {TMP_SHAPE}; "
             "pass --out <printed path> to step through it or stop its daemons later")
 SHOW_OUTPUT_HELP = "also print each step's output as it runs; the log is written either way"
 SCENARIO_HELP = "the scenario file, or - to read it from stdin"
@@ -1734,7 +1815,7 @@ def read_inputs(args) -> tuple[Scenario, Path | None, str]:
     Returns both, plus the scenario's reference for messages: the path as given, or '-'."""
     tmp, out = getattr(args, "tmp", False), getattr(args, "out", None)
     if tmp and out:
-        raise GustError("--tmp and --out cannot be combined: with --tmp the out dir is /tmp/gust-<yymmdd>/<stem>.<HHMMSS>.out")
+        raise GustError(f"--tmp and --out cannot be combined: with --tmp the out dir is {TMP_SHAPE}")
     ref = str(args.scenario)
     text, source, kwargs = read_source(args)
     scenario = _load_named(text, source, **kwargs)
@@ -1780,6 +1861,7 @@ def _cli_check(scenario: Scenario, gradle: str | None, user_home: Path, as_json:
         else:
             print(f"remote:   {remote.link} (not cached; fetched on run)")
     user_home.mkdir(parents=True, exist_ok=True)
+    _check_shell(scenario.steps)
     choice = settle_gradle(scenario, gradle, root, user_home, needed=_needs_gradle(scenario.steps), may_install=True)
     print_header(scenario, None, user_home, choice, sys.stdout, description=True)
     counts = scenario.counts()
