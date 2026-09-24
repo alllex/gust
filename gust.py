@@ -1229,23 +1229,32 @@ def begin(run: Run, needed: bool) -> RunSummary:
 
 
 def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
-    """Set up, stop daemons, run the steps up to the first deviation or error, and stop daemons again."""
-    summary = begin(run, needed=stop_daemons or _needs_gradle(run.scenario.steps))
-    total = len(run.scenario.steps)
-    if summary.status == "error":
-        return _finish(run, summary, total)
-    if stop_daemons:
-        summary.stop_daemons = {"before": _stop_daemons(run, "[BEF]", "stop-daemons-before.log", full=False)}
-    summary.steps, summary.status = _execute_steps(run, range(1, total + 1))
-    if stop_daemons:
-        summary.stop_daemons["after"] = _stop_daemons(run, "[AFT]", "stop-daemons-after.log", full=False)
-    return _finish(run, summary, total)
+    """Set up, stop daemons, run the steps up to the first deviation or error, and stop daemons again.
 
-
-def _finish(run: Run, summary: RunSummary, total: int) -> RunSummary:
-    """Write summary.json and print the result: and out: lines."""
+    Ends with summary.json and the result: and out: lines. No log tail is printed after a deviation
+    when the output was shown.
+    """
+    steps = run.scenario.steps
+    summary = begin(run, needed=stop_daemons or _needs_gradle(steps))
+    if summary.status != "error":                                        # a failed install: no step runs
+        if stop_daemons:
+            summary.stop_daemons = {"before": _stop_daemons(run, "[BEF]", "stop-daemons-before.log", full=False)}
+        for i, step in enumerate(steps, start=1):
+            print(f"[{i}/{len(steps)}] {step.label()}", file=run.out)
+            result = _run_command(run, step, i) if isinstance(step, RunStep) else _change_files(run, step, i)
+            summary.steps.append(result)
+            if result.outcome == "error":
+                summary.status = "error"
+                break
+            if result.deviated:
+                summary.status = "deviated"
+                if not run.show_output:
+                    _print_tail(run.out_dir / result.log, run.tail, run.out)
+                break
+        if stop_daemons:
+            summary.stop_daemons["after"] = _stop_daemons(run, "[AFT]", "stop-daemons-after.log", full=False)
     (run.out_dir / "summary.json").write_text(summary.to_json() + "\n", encoding="utf-8")
-    print(f"result: {summary.status} ({len(summary.steps)}/{total} steps ran)", file=run.out)
+    print(f"result: {summary.status} ({len(summary.steps)}/{len(steps)} steps ran)", file=run.out)
     print_out(run)
     return summary
 
@@ -1255,28 +1264,6 @@ def check_set_up(out_dir: Path, scenario_ref: str) -> None:
     if not (out_dir / MARKER).is_file() or not (out_dir / "project").is_dir():
         hint = "pipe the same scenario to 'gust setup -'" if scenario_ref == "-" else f"run 'gust setup {scenario_ref}'"
         raise GustError(f"no set-up project at {out_dir / 'project'}; {hint} first")
-
-
-def _execute_steps(run: Run, numbers) -> tuple[list[StepResult], str]:
-    """Run the steps with these 1-based numbers in order, up to the first deviation or error.
-
-    Returns the results and the status: "ok", "deviated", or "error". No log tail is printed after
-    a deviation when the output was shown.
-    """
-    total = len(run.scenario.steps)
-    results: list[StepResult] = []
-    for i in numbers:
-        step = run.scenario.steps[i - 1]
-        print(f"[{i}/{total}] {step.label()}", file=run.out)
-        result = _run_command(run, step, i) if isinstance(step, RunStep) else _change_files(run, step, i)
-        results.append(result)
-        if result.outcome == "error":
-            return results, "error"
-        if result.deviated:
-            if not run.show_output:
-                _print_tail(run.out_dir / result.log, run.tail, run.out)
-            return results, "deviated"
-    return results, "ok"
 
 
 def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
