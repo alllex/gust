@@ -492,7 +492,7 @@ class LayoutRemoteTest(GustCase):
         scenario = gs.load_scenario(self.write(layout, steps).read_text(), base_dir=self.tmp)
         out_dir = self.tmp / "s.out"
         summary = self.run_scenario(scenario, out_dir, gradle="gecho", stop_daemons=False)
-        self.assertEqual(summary.status, "ok")
+        self.assertEqual(summary.status, "ok", self.out.getvalue())
         checkout = self.gust / "remotes" / scenario.remote.identity
         self.assertTrue((checkout / ".git").is_dir())
         self.assertEqual(summary.remote, {"link": f"{self.url}#{self.sha}", "checkout": str(checkout), "fetched": True})
@@ -662,7 +662,7 @@ class LayoutRemoteTest(GustCase):
         refused("./nope/gradle", "--gradle './nope/gradle' is relative to the project dir but no such file is in setup.layout.project or the remote checkout")
         (self.tmp / "plain").write_text("not executable")
         refused("./plain", "--gradle './plain' is relative to the project dir but no such file is in setup.layout.project or the remote checkout")
-        refused(str(self.tmp / "plain"), f"--gradle '{self.tmp / 'plain'}': no executable at {self.tmp / 'plain'}")
+        refused(str(self.tmp / "plain"), f"--gradle {str(self.tmp / 'plain')!r}: no executable at {self.tmp / 'plain'}")
         gradle = runnable("gradle")
         summary = self.run_scenario(scenario, self.tmp / "a.out", gradle=f"bin/{gradle}", stop_daemons=False)
         self.assertEqual(summary.gradle, str(self.bin / gradle))            # a relative filesystem path, made absolute
@@ -672,7 +672,7 @@ class LayoutRemoteTest(GustCase):
         os.environ["HOME"] = os.environ["USERPROFILE"] = str(self.tmp)     # USERPROFILE on Windows
         summary = self.run_scenario(scenario, self.tmp / "h.out", gradle=f"~/bin/{gradle}", stop_daemons=False)
         self.assertEqual(summary.gradle, str(self.bin / gradle))
-        refused("~/nope/gradle", f"--gradle '{self.tmp}/nope/gradle': no executable at {self.tmp / 'nope' / 'gradle'}")
+        refused("~/nope/gradle", f"--gradle {str(self.tmp) + '/nope/gradle'!r}: no executable at {self.tmp / 'nope' / 'gradle'}")
         # 2. no "/": an executable on PATH or in the working directory is a binary
         summary = self.run_scenario(scenario, self.tmp / "b.out", gradle="gradle", stop_daemons=False)
         self.assertEqual(summary.gradle, "gradle")
@@ -1658,8 +1658,8 @@ class StepCommandTest(GustCase):
 
     def test_runs_only_the_listed_steps(self):
         self.setup()
-        code, out, _ = self.cli("step", str(self.scenario), "1")
-        self.assertEqual(code, gs.EXIT_OK)
+        code, out, err = self.cli("step", str(self.scenario), "1")
+        self.assertEqual(code, gs.EXIT_OK, out + err)
         self.assertEqual(out, f"scenario: s\nout:      {self.out_dir}\nhome:     {self.gust / gs.SHARED_HOME}\n"
                               f"gradle:   gradle 9.7.1 (default)\n[1/6] gradle says hello\n$ gradle help\n"
                               + re.search(r"ok: exit 0, 1 output check in \d+\.\ds -> step-01\.log\n", out).group(0)
@@ -1736,8 +1736,8 @@ class StepCommandTest(GustCase):
         on_disk = (self.out_dir / "summary.json").read_bytes()
         self.assertEqual(json.loads(on_disk)["status"], "deviated")
         self.assertEqual(len(json.loads(on_disk)["steps"]), 5)
-        code, out, _ = self.cli("step", str(self.scenario), "6", "1", "--json")
-        self.assertEqual(code, gs.EXIT_OK)
+        code, out, err = self.cli("step", str(self.scenario), "6", "1", "--json")
+        self.assertEqual(code, gs.EXIT_OK, out + err)
         self.assertEqual((self.out_dir / "summary.json").read_bytes(), on_disk)
         self.assertIn("[6/6] Run: echo using $GRADLE home=$GRADLE_USER_HOME\n", out)
         printed = json.loads(out.rstrip("\n").splitlines()[-1])
