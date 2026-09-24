@@ -1,0 +1,8 @@
+description = "Gradle from PATH, run from bash as $GRADLE."
+
+[[steps]]
+name = "gradle from PATH runs from bash"
+run.shell = { command = '"$GRADLE" help', expect = { output = ["Welcome to Gradle"] } }
+
+[setup.layout.project]
+"settings.gradle.kts" = 'rootProject.name = "shell"'
