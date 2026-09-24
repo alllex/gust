@@ -1170,11 +1170,6 @@ class Run:
     def command(self, args: str) -> GradleCommand:
         return GradleCommand(self.choice.binary, args, self.user_home)
 
-    def summary(self, **fields) -> RunSummary:
-        return RunSummary(scenario=self.scenario.name, description=self.scenario.description, out=str(self.out_dir),
-                          project=str(self.project), gradle=self.choice.binary, gradle_version=self.choice.version,
-                          gradle_args=self.gradle_args or None, gradle_user_home=str(self.user_home), **fields)
-
 
 def print_header(scenario: Scenario, out_dir: Path | None, user_home: Path, choice: GradleChoice, out,
                  description: bool = False) -> None:
@@ -1216,7 +1211,9 @@ def begin(run: Run, needed: bool) -> RunSummary:
     run.choice = settle_gradle(scenario, run.gradle, root, run.user_home, needed=needed, may_install=True)
     lay_out(scenario, run.out_dir)
     print_header(scenario, run.out_dir, run.user_home, run.choice, out)
-    summary = run.summary(remote=remote_info)
+    summary = RunSummary(scenario=scenario.name, description=scenario.description, out=str(run.out_dir),
+                         project=str(run.project), gradle=run.choice.binary, gradle_version=run.choice.version,
+                         gradle_args=run.gradle_args or None, gradle_user_home=str(run.user_home), remote=remote_info)
     if run.choice.install:
         summary.install = _install_wrapper(run)
         if summary.install["exit_code"] != 0:                            # a failed install ends the run as an error
