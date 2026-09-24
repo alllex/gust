@@ -1252,13 +1252,6 @@ def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
     return summary
 
 
-def check_set_up(out_dir: Path, scenario_ref: str) -> None:
-    """Check for a set-up project: the marker and <out>/project. scenario_ref goes into the hint."""
-    if not (out_dir / MARKER).is_file() or not (out_dir / "project").is_dir():
-        hint = "pipe the same scenario to 'gust setup -'" if scenario_ref == "-" else f"run 'gust setup {scenario_ref}'"
-        raise GustError(f"no set-up project at {out_dir / 'project'}; {hint} first")
-
-
 def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
     if step.kind == "gradle":
         command = run.command(f"{step.command} {shlex.join(run.gradle_args)}".rstrip())   # the arguments after -- go last
@@ -1652,14 +1645,14 @@ def main(argv: list[str] | None = None) -> int:
             text, source, kwargs = read_source(args)
             print(flatten(text, source, **kwargs), end="")
             return EXIT_OK
-        scenario, out_dir, ref = read_inputs(args)
+        scenario, out_dir = read_inputs(args)
         user_home = shared_home(args.gradle_user_home)
         if args.command == "check":
             return _cli_check(scenario, args.gradle, user_home, args.json)
         run = Run(scenario, out_dir, user_home, gradle=args.gradle, tail=getattr(args, "tail", 30),
                   show_output=getattr(args, "show_output", False), gradle_args=gradle_args)
         if args.command == "stop-daemons":
-            return _cli_stop_daemons(run, ref)
+            return _cli_stop_daemons(run, str(args.scenario))
         if args.command == "setup":
             return _cli_setup(run)
         summary = run_scenario(run, not args.keep_daemons)
@@ -1671,22 +1664,20 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_ERROR
 
 
-def read_inputs(args) -> tuple[Scenario, Path | None, str]:
-    """Load the scenario from its file or stdin, and settle the out dir (None for check).
-    Returns both, plus the scenario's reference for messages: the path as given, or '-'."""
+def read_inputs(args) -> tuple[Scenario, Path | None]:
+    """Load the scenario from its file or stdin, and settle the out dir (None for check)."""
     tmp, out = getattr(args, "tmp", False), getattr(args, "out", None)
     if tmp and out:
         raise GustError("--tmp and --out cannot be combined: with --tmp the out dir is /tmp/gust-<yymmdd>/<stem>.<HHMMSS>.out")
-    ref = str(args.scenario)
     text, source, kwargs = read_source(args)
     scenario = _load_named(text, source, **kwargs)
     stem = kwargs.get("default_name", scenario.name)
     if args.command == "check":
-        return scenario, None, ref
+        return scenario, None
     out_dir = tmp_out(stem) if tmp else out.resolve() if out else (Path.cwd() / (stem + ".out")).resolve()
-    if ref != "-":
+    if str(args.scenario) != "-":
         check_out_dir(out_dir, args.scenario)
-    return scenario, out_dir, ref
+    return scenario, out_dir
 
 
 def read_source(args) -> tuple[str, str, dict]:
@@ -1738,7 +1729,10 @@ def _cli_check(scenario: Scenario, gradle: str | None, user_home: Path, as_json:
 
 
 def _cli_stop_daemons(run: Run, ref: str) -> int:
-    check_set_up(run.out_dir, ref)
+    """Run '<gradle> --stop' in a set-up project: the marker and <out>/project. ref, the scenario as given, is for the hint."""
+    if not (run.out_dir / MARKER).is_file() or not run.project.is_dir():
+        hint = "pipe the same scenario to 'gust setup -'" if ref == "-" else f"run 'gust setup {ref}'"
+        raise GustError(f"no set-up project at {run.project}; {hint} first")
     run.choice = settle_gradle(run.scenario, run.gradle, run.project, run.user_home, needed=True, may_install=False)
     print_header(run.scenario, run.out_dir, run.user_home, run.choice, run.out)
     stopped = _stop_daemons(run, "[STOP]", "stop-daemons.log", full=True)["exit_code"] == 0
