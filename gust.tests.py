@@ -2,7 +2,7 @@
 
 Offline, against a local git fixture repository and fake Gradle binaries, written in Python.
 Needs on PATH: git, and the POSIX tools the shell steps use (/bin/sh, echo, grep, test, false, printf).
-On Windows, shell steps run with the bash of Git for Windows, which brings those tools.
+On Windows, shell steps run with the bash of Git for Windows, which comes with those tools.
 Nothing is written outside per-test temporary directories: each test gets its own .gust and PATH.
 """
 
@@ -42,19 +42,20 @@ name = "min"
 run.shell = "true"
 """
 
-# The fake Gradle binaries are Python scripts, so the same ones run everywhere: NAME with a shebang on POSIX,
-# NAME.py behind a one-line NAME.bat on Windows (runnable(NAME) is the path to run). Each starts with PRELUDE:
-# ARGS are the arguments, NAME is the name it runs as, and copy_as(name) makes a copy of it that runs as name.
+# The fake Gradle binaries are Python scripts, so the same ones run everywhere: NAME.py, run by a one-line
+# launcher next to it, NAME on POSIX and NAME.bat on Windows (runnable(NAME)). Each script starts with PRELUDE:
+# ARGS are the arguments, NAME is the name it runs as, and with copy_as(name) a copy of it is made that runs as name.
 PRELUDE = """\
 import os, shutil, sys
 from pathlib import Path
-sys.stdout.reconfigure(newline="\\n")                                 # LF on Windows too, as a POSIX tool prints
+sys.stdout.reconfigure(newline="\\n")                                 # LF on Windows too, as on POSIX
 ARGS, NAME = sys.argv[1:], Path(__file__).stem
 def copy_as(name):
-    for source in [Path(__file__)] + ([Path(__file__).with_suffix(".bat")] if os.name == "nt" else []):
+    for source in (Path(__file__), Path(__file__).with_suffix(".bat" if os.name == "nt" else "")):
         shutil.copy(source, name + source.suffix)
         os.chmod(name + source.suffix, 0o755)
 """
+LAUNCHER = '#!/bin/sh\nexec "{python}" "$0.py" "$@"\n'                 # a shebang cannot hold a path with a space
 BAT = '@"{python}" "%~dpn0.py" %*\n'                                  # %~dpn0: this file's path without .bat
 
 
@@ -65,13 +66,16 @@ def runnable(name):
 
 def write_script(where, name, code):
     """Write the fake binary name, PRELUDE and then code, into where. Returns the path to run it by."""
-    if gs.WINDOWS:
-        (where / f"{name}.py").write_text(PRELUDE + code)
-        (where / runnable(name)).write_text(BAT.format(python=sys.executable))
-    else:
-        (where / name).write_text(f"#!{sys.executable}\n" + PRELUDE + code)
-        (where / name).chmod(0o755)
-    return where / runnable(name)
+    (where / f"{name}.py").write_text(PRELUDE + code)
+    launcher = where / runnable(name)
+    launcher.write_text((BAT if gs.WINDOWS else LAUNCHER).format(python=sys.executable))
+    launcher.chmod(0o755)
+    return launcher
+
+
+def gradle_env(binary):
+    """$GRADLE for a binary given by its path: on Windows with forward slashes, for bash."""
+    return Path(binary).as_posix() if gs.WINDOWS else str(binary)
 
 
 # A stand-in for Gradle. On `NAME wrapper --gradle-version V ...`, a copy of it becomes the project's wrapper,
@@ -777,7 +781,7 @@ class LayoutRemoteTest(GustCase):
         code, out, _ = self.cli("step", str(s), "1")
         self.assertEqual(code, gs.EXIT_OK, out)
         self.assertIn(f"gradle:   {WRAPPER} 9.7.1 (scenario)\n[1/1]", out)
-        write_script(self.tmp / "s.out" / "project", "gradlew", 'print("not gradle")\n')   # a broken wrapper fails the probe
+        write_script(self.tmp / "s.out" / "project", "gradlew", 'print("not gradle")\n')   # the probe of a broken wrapper fails
         code, _, err = self.cli("step", str(s), "1")
         self.assertEqual(code, gs.EXIT_ERROR)
         self.assertEqual(err.strip(), f"error: {WRAPPER}: not a Gradle binary (no 'Gradle <version>' line in the output of --version)")
@@ -924,7 +928,7 @@ class SetupTest(GustCase):
         self.assertEqual((project / "top.txt").read_text(), "t")
         self.assertEqual((project / "lf.txt").read_bytes(), b"1\n2\r\n")                  # as written, on Windows too
         gs._apply_edit(project, s.steps[0].edits[0])
-        self.assertEqual((project / "lf.txt").read_bytes(), b"one\n2\n")                   # an edit writes LF, everywhere
+        self.assertEqual((project / "lf.txt").read_bytes(), b"one\n2\n")                   # after an edit: LF, everywhere
         self.assertEqual((self.out_dir / gs.MARKER).read_text(),
                          "Marker for gust: this directory was produced by gust and may be replaced or removed by a later run.\n")
 
@@ -1179,7 +1183,7 @@ with = "b"
     def test_shell_step_sees_gradle_env(self):
         gecho = self.gecho
         summary = self.run_text('name = "g2"\n[[steps]]\nrun.shell = "echo using $GRADLE"', gradle=str(gecho))
-        self.assertEqual((self.out_dir / summary.steps[0].log).read_text().strip(), f"using {gecho}")
+        self.assertEqual((self.out_dir / summary.steps[0].log).read_text().strip(), f"using {gradle_env(gecho)}")
         self.assertNotIn("using /", self.out.getvalue())
 
     def test_gradle_step_via_dummy_binary(self):
@@ -1706,7 +1710,7 @@ class StepCommandTest(GustCase):
         code, out, _ = self.cli("step", str(self.scenario), "6", "--gradle", str(fake))
         self.assertEqual(code, gs.EXIT_OK)
         self.assertIn(f"gradle:   {fake} 9.7.1 (--gradle)", out)
-        self.assertEqual((self.out_dir / "step-06.log").read_text().strip(), f"using {fake} home={self.gust / gs.SHARED_HOME}")
+        self.assertEqual((self.out_dir / "step-06.log").read_text().strip(), f"using {gradle_env(fake)} home={self.gust / gs.SHARED_HOME}")
         code, _, err = self.cli("step", str(self.scenario), "6", "--gradle", "/opt/g/bin/gradle")    # resolved even for a shell step
         self.assertEqual(code, gs.EXIT_ERROR)
         self.assertIn(f"error: --gradle '/opt/g/bin/gradle': no executable at {Path('/opt/g/bin/gradle').resolve()}", err)
@@ -1866,28 +1870,36 @@ run.shell = "true"
 
 
 class WindowsTest(GustCase):
-    """The Windows helpers, run on any OS: gs.WINDOWS patched where the helper reads it."""
+    """The Windows helpers, run on any OS, some with gs.WINDOWS patched."""
 
-    def test_git_bash_is_found_in_the_git_install(self):
-        for git in ("cmd/git.exe", "bin/git.exe", "mingw64/bin/git.exe"):          # where Git for Windows keeps git
-            root = self.tmp / git.replace("/", "-") / "Git"
-            for f in (git, "bin/bash.exe"):
-                (root / f).parent.mkdir(parents=True, exist_ok=True)
-                (root / f).write_text("")
-            self.assertEqual(gs.git_bash(str(root / git)), str((root / "bin" / "bash.exe").resolve()), git)
-        (self.tmp / "wsl").mkdir()
-        (self.tmp / "wsl" / "git.exe").write_text("")                                  # a git with no bash next to it
+    def fake_git(self, exec_path):
+        """A git on PATH whose --exec-path is exec_path; git_bash() asks it afresh."""
+        gs.git_bash.cache_clear()
+        self.addCleanup(gs.git_bash.cache_clear)
+        self.script("git", f"print({str(exec_path)!r})\n")
+
+    def test_git_bash_is_found_above_the_exec_path(self):
+        for root in ("Git", "scoop/apps/git/current"):                                 # an installer's layout, and scoop's
+            root = self.tmp / root
+            (root / "bin").mkdir(parents=True)
+            (root / "bin" / "bash.exe").write_text("")
+            self.fake_git(root / "mingw64" / "libexec" / "git-core")
+            self.assertEqual(gs.git_bash(), str(root / "bin" / "bash.exe"), root)
+        self.fake_git(self.tmp / "wsl" / "libexec" / "git-core")                       # a git with no bash above it
         with self.assertRaises(gs.GustError) as cm:
-            gs.git_bash(str(self.tmp / "wsl" / "git.exe"))
-        self.assertEqual(str(cm.exception), "shell steps on Windows run with the bash of Git for Windows, but there is no "
-                                            f"bin\\bash.exe in the install of {self.tmp / 'wsl' / 'git.exe'}")
-        os.environ["PATH"] = str(self.bin)
+            gs.git_bash()
+        self.assertRegex(str(cm.exception), "^shell steps on Windows run with the bash of Git for Windows, but there is no "
+                                            r"bin\\bash\.exe above .*git.*'s exec path " + re.escape(repr(str(self.tmp / "wsl" / "libexec" / "git-core"))) + "$")
+        gs.git_bash.cache_clear()
+        os.environ["PATH"] = str(self.bin / "none")
         with self.assertRaises(gs.GustError) as cm:
             gs.git_bash()
         self.assertEqual(str(cm.exception), "shell steps on Windows run with the bash of Git for Windows, but no git is on PATH")
 
     def test_no_bash_is_refused_before_the_out_dir_is_touched(self):
         self.patch("WINDOWS", True)
+        gs.git_bash.cache_clear()
+        self.addCleanup(gs.git_bash.cache_clear)
         os.environ["PATH"] = str(self.bin)                                             # no git
         with self.assertRaises(gs.GustError) as cm:
             self.run_scenario(gs.load_scenario(MINIMAL), self.tmp / "s.out")
@@ -1903,10 +1915,49 @@ class WindowsTest(GustCase):
         self.patch("WINDOWS", True)
         self.assertEqual(gs.gradle_argv(line, self.tmp), [str(self.tmp / "gradlew.bat"), "--gradle-user-home", "/a home", "help", "-Dx=a b"])
         binary, *args = gs.gradle_argv("gecho help", self.tmp)                                 # from PATH
-        self.assertEqual((os.path.normcase(binary), args), (os.path.normcase(self.gecho), ["help"]))   # which() may say .BAT
+        self.assertEqual((os.path.normcase(binary), args), (os.path.normcase(self.gecho), ["help"]))   # .BAT from which(), maybe
         with self.assertRaises(gs.GustError) as cm:
             gs.gradle_argv("gecho 'help", self.tmp)
         self.assertIn("cannot split \"gecho 'help\" into arguments", str(cm.exception))
+
+    def test_a_failed_removal_keeps_the_marker(self):
+        out_dir = self.tmp / "s.out"
+        gs.prepare_out(out_dir)
+        for name in ("project/f", "step-01.log", "a", "z"):                            # names around the marker's
+            (out_dir / name).parent.mkdir(exist_ok=True)
+            (out_dir / name).write_text("")
+        real = gs.rmtree
+
+        def held(path, ignore_errors=False):                                           # as with a daemon's open file
+            raise PermissionError(13, "in use", str(path / "f"))
+        self.patch("rmtree", held)
+        with self.assertRaises(gs.GustError) as cm:
+            gs.prepare_out(out_dir)
+        self.assertIn("stop it with 'gust stop-daemons' and try again", str(cm.exception))
+        self.assertIn(str(out_dir / "project" / "f"), str(cm.exception))
+        self.assertTrue((out_dir / gs.MARKER).is_file())                               # so the dir is still gust's
+        gs.rmtree = real
+        gs.prepare_out(out_dir)                                                         # and the next setup goes through
+        self.assertEqual([p.name for p in out_dir.iterdir()], [gs.MARKER])
+
+    def test_echo_on_windows_has_lf_line_ends(self):
+        self.patch("WINDOWS", True)
+        echo = io.StringIO()
+        gs._run_logged([sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'a\\r\\nb\\n')"], self.tmp, dict(os.environ),
+                       self.tmp / "x.log", echo)
+        self.assertEqual(echo.getvalue(), f"{rule('x.log')}\na\nb\n{CLOSING}\n")
+        self.assertEqual((self.tmp / "x.log").read_bytes(), b"a\r\nb\n")          # the log as printed
+
+    def test_gradle_env_runs_in_the_shell(self):
+        self.fake_gradle_on_path()
+        shell = '[[steps]]\nrun.shell = { command = \'"$GRADLE" help\', expect = { output = ["NAME help"] } }\n'
+        s = self.scenario_file('name = "e"\n' + SETTINGS + shell.replace("NAME", "gradle"))
+        code, out, _ = self.cli("run", str(s), "--keep-daemons")                           # gradle from PATH, by name
+        self.assertEqual(code, gs.EXIT_OK, out)
+        s.write_text('name = "e"\n' + SETTINGS + shell.replace("NAME", "gradlew"))
+        code, out, _ = self.cli("run", str(s), "--gradle", "9.7.1", "--keep-daemons")     # the installed wrapper
+        self.assertEqual(code, gs.EXIT_OK, out)
+        self.assertIn(f"gradle:   {WRAPPER} 9.7.1", out)
 
     def test_executable_by_extension(self):
         self.patch("WINDOWS", True)
@@ -1920,7 +1971,7 @@ class WindowsTest(GustCase):
     def test_windows_paths(self):
         self.assertEqual(gs.TMP_ROOT, Path(tempfile.gettempdir()))
         self.assertEqual(gs.WRAPPER, "./gradlew.bat")
-        self.assertEqual(gs._settle_binary(".\\gradlew.bat", lambda rel: rel == "gradlew.bat"), ("./gradlew.bat", None))   # as bash reads it too
+        self.assertEqual(gs._settle_binary(".\\gradlew.bat", lambda rel: rel == "gradlew.bat"), ("./gradlew.bat", None))   # the form bash accepts too
         self.assertEqual(gs._settle_binary(str(self.gecho), lambda rel: False), (str(self.gecho), None))                  # C:\...\gecho.bat
 
 

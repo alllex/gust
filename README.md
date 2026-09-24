@@ -187,9 +187,9 @@ header was printed.
 ## Install
 
 Gust is one file, `gust.py`, with no dependencies beyond the Python standard
-library. It needs Python 3.11 or newer, and runs on macOS, Linux, and Windows. Download it from the latest release as
-`gust`, make it executable, and move it into any directory on your PATH, such
-as `~/.local/bin` or `/usr/local/bin`:
+library. It needs Python 3.11 or newer, and runs on macOS, Linux, and Windows.
+Download it from the latest release as `gust`, make it executable, and move it
+into any directory on your PATH, such as `~/.local/bin` or `/usr/local/bin`:
 
 ```
 curl -fLo gust https://github.com/alllex/gust/releases/latest/download/gust.py

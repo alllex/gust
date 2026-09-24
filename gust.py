@@ -21,6 +21,7 @@ if sys.version_info < (3, 11):  # ahead of any import that needs 3.11; keep this
     sys.exit(2)
 
 import argparse
+import functools
 import json
 import os
 import re
@@ -44,7 +45,7 @@ EXIT_ERROR = 2       # bad input, or a step that could not be carried out
 
 # --- the out dir and the .gust cache
 MARKER = ".gust-run"            # marks an out dir as made by gust, so it may be removed and recreated
-TMP_ROOT = Path(tempfile.gettempdir() if WINDOWS else "/tmp")   # --tmp: /tmp/gust-<yymmdd>/<stem>.<HHMMSS>.out
+TMP_ROOT = Path(tempfile.gettempdir() if WINDOWS else "/tmp")
 TMP_SHAPE = TMP_ROOT / "gust-<yymmdd>" / "<stem>.<HHMMSS>.out"
 INSTALL_LOG = "install-wrapper.log"
 WRAPPER_LABEL = "[WRP]"
@@ -58,7 +59,7 @@ GRADLE_USER_HOME_ENV = "GRADLE_USER_HOME"
 GRADLE_ARGS_ENV = "GRADLE_ARGS"  # for shell steps: the arguments after --, shell-quoted
 WRAPPER = "./gradlew.bat" if WINDOWS else "./gradlew"   # the project's own wrapper, relative to the project dir
 WRAPPER_FILE = WRAPPER[2:]
-RUNNABLE_SUFFIXES = (".exe", ".bat", ".cmd", ".com")      # on Windows, what a file needs to be run
+RUNNABLE_SUFFIXES = (".exe", ".bat", ".cmd", ".com")      # on Windows, the extensions of a file that can be run
 
 # --- the scenario file's vocabulary
 TOP_KEYS = {"name", "description", "setup", "steps"}
@@ -185,7 +186,7 @@ steps[].run.*.expect                what must hold after the step; every listed 
   shorthand     expect = "fail"       means { exit = "fail" }
   exit          string   optional   "pass" (default, exit code 0) or "fail" (any other exit code)
   output        array    optional   strings that must each appear in the step's combined output,
-                                    where a CRLF line end reads as LF
+                                    where a CRLF line end is read as LF
   no_output     array    optional   strings that must not appear in it
 
 steps[].edit[]
@@ -220,7 +221,9 @@ the working directory, named after the scenario file's stem (testing-loop.toml
 
 An out dir from an earlier run (one with the marker) is removed and recreated
 without notice, so nothing of the earlier run is kept; use --tmp for a fresh
-dir per run. An empty directory is reused. Any other non-empty directory is
+dir per run. When a file of the earlier run cannot be removed (on Windows,
+one that a Gradle daemon still has open), the run is refused with a hint to
+stop the daemons, and the marker stays, so a later run can go through. An empty directory is reused. Any other non-empty directory is
 left alone and the run is refused, so nothing gust did not create is ever wiped
 through --out.
 
@@ -431,14 +434,18 @@ Windows
 =======
 
 On Windows the project's wrapper is gradlew.bat: read ./gradlew.bat for
-./gradlew wherever it appears here, --gradle included, which takes
-.\\gradlew.bat as the same. A Gradle command runs without a shell: its
-arguments are split as sh splits them, quotes included, with nothing expanded,
-and the binary is looked up in the project dir or on PATH (gradle is found as
-gradle.bat). Shell steps run with the bash of Git for Windows, bin\\bash.exe in
-the install that git on PATH comes from, so one scenario file works on every
-system; any other bash on PATH, such as WSL's, is not used. The --tmp root is
-the temp dir in place of /tmp.
+./gradlew wherever it appears here, --gradle included, where .\\gradlew.bat
+counts as the same. A Gradle command runs without a shell: its arguments are
+split by sh's rules, quotes included, with nothing expanded, and the binary is
+looked up in the project dir or on PATH (gradle is found as gradle.bat). The
+arguments of a .bat file go through cmd.exe, so cmd's special characters in
+them (& | < > ^ %) may not arrive as written. Shell steps run with the bash of
+Git for Windows, bin\\bash.exe in the install of the git on PATH, so one
+scenario file works on every system; any other bash on PATH, such as WSL's, is
+not used. $GRADLE is the full path of the binary there, with forward slashes,
+unless it is ./gradlew.bat. The files of a remote checkout come with the line
+ends of this machine's git settings, so on Windows they may be CRLF. The --tmp
+root is the temp dir in place of /tmp.
 
 Preconditions
 =============
@@ -865,18 +872,36 @@ def prepare_out(out_dir: Path) -> None:
     """
     if out_dir.exists():
         _ours_or_empty(out_dir, "out dir")
-        rmtree(out_dir)
-    out_dir.mkdir(parents=True)
-    (out_dir / MARKER).write_text(MARKER_TEXT, encoding="utf-8")
+        try:
+            for child in out_dir.iterdir():            # all but the marker, so after a failure the dir is still gust's
+                if child.name == MARKER:
+                    continue
+                if child.is_dir() and not child.is_symlink():
+                    rmtree(child)
+                else:
+                    child.unlink()
+        except OSError as e:
+            raise GustError(f"cannot remove {e.filename or out_dir} of the earlier run ({e.strerror}); if a Gradle daemon "
+                            f"still has files open there, stop it with 'gust stop-daemons' and try again") from e
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / MARKER).write_text(MARKER_TEXT, encoding="utf-8", newline="")
 
 
 def rmtree(path: Path, ignore_errors: bool = False) -> None:
-    """shutil.rmtree, with every file made writable first on Windows, where git's object files are read-only
-    and could not be removed otherwise."""
-    if WINDOWS:
-        for p in path.rglob("*"):
-            os.chmod(p, stat.S_IREAD | stat.S_IWRITE)
-    shutil.rmtree(path, ignore_errors=ignore_errors)
+    """shutil.rmtree. On Windows a file that cannot be removed is made writable and removed again, since git's
+    object files are read-only there."""
+    if not WINDOWS:
+        shutil.rmtree(path, ignore_errors=ignore_errors)
+        return
+
+    def writable_and_again(remove, p, _):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            remove(p)
+        except OSError:
+            if not ignore_errors:
+                raise
+    shutil.rmtree(path, **{"onexc" if sys.version_info >= (3, 12) else "onerror": writable_and_again})
 
 
 def _ours_or_empty(path: Path, what: str) -> None:
@@ -958,8 +983,8 @@ class GradleCommand:
 
 
 def gradle_argv(command: str, cwd: Path) -> list[str]:
-    """What a Gradle command line runs as: sh -c on POSIX. On Windows there is no sh, so the line is split as sh
-    would split it and run directly, with the binary looked up in cwd (./gradlew.bat) or on PATH (gradle.bat)."""
+    """What a Gradle command line runs as: sh -c on POSIX. On Windows there is no sh, so the line is split by sh's
+    rules and run directly, with the binary looked up in cwd (./gradlew.bat) or on PATH (gradle.bat)."""
     if not WINDOWS:
         return ["/bin/sh", "-c", command]
     try:
@@ -977,21 +1002,25 @@ def shell_argv(command: str) -> list[str]:
     return [git_bash() if WINDOWS else "/bin/sh", "-c", command]
 
 
-def git_bash(git: str | None = None) -> str:
-    """Git for Windows' bash: bin/bash.exe in the install that git (by default, git from PATH) belongs to.
+@functools.cache
+def git_bash() -> str:
+    """Git for Windows' bash: bin/bash.exe in the install that holds `git --exec-path`, for the git on PATH.
     A bash from PATH is not taken, since on Windows that can be WSL's."""
-    git = git or shutil.which("git")
-    for parent in Path(git).resolve().parents if git else ():
+    git = shutil.which("git")
+    if git is None:
+        raise GustError("shell steps on Windows run with the bash of Git for Windows, but no git is on PATH")
+    exec_path = subprocess.run([git, "--exec-path"], capture_output=True, text=True).stdout.strip()
+    for parent in Path(exec_path).parents if exec_path else ():
         if (parent / "bin" / "bash.exe").is_file():
             return str(parent / "bin" / "bash.exe")
-    raise GustError("shell steps on Windows run with the bash of Git for Windows, but "
-                    + (f"there is no bin\\bash.exe in the install of {git}" if git else "no git is on PATH"))
+    raise GustError(f"shell steps on Windows run with the bash of Git for Windows, but there is no bin\\bash.exe "
+                    f"above {git}'s exec path {exec_path!r}")
 
 
 def _check_shell(steps) -> None:
-    """Find the shell for the shell steps among these, if any, before the out dir is touched."""
-    if any(isinstance(s, RunStep) and s.kind == "shell" for s in steps):
-        shell_argv("")
+    """Find the bash for the shell steps among these, if any, before the out dir is touched."""
+    if WINDOWS and any(isinstance(s, RunStep) and s.kind == "shell" for s in steps):
+        git_bash()
 
 
 _VERSION_LINE = re.compile(r"^Gradle (\S+)\s*$", re.M)
@@ -1128,7 +1157,7 @@ def _settle_binary(value: str, exists) -> tuple[str, str | None]:
             raise GustError(f"--gradle {value!r}: no executable at {path.resolve()}")
         return (value if path.is_absolute() else str(path.resolve())), None
     found = shutil.which(value)
-    if found and not (WINDOWS and os.path.dirname(found) == os.curdir):   # on Windows, which() looks in the working dir first
+    if found and not (WINDOWS and os.path.dirname(found) == os.curdir):   # on Windows, the working dir is searched first
         return value, None
     local = Path(found).resolve() if found else Path.cwd() / value
     if local.is_file() and _executable(local):
@@ -1140,7 +1169,7 @@ def _settle_binary(value: str, exists) -> tuple[str, str | None]:
 
 def _executable(path: Path) -> bool:
     """Whether the file exists and can be run: by its mode on POSIX, by its extension (.bat, .exe, ...) on Windows."""
-    return path.suffix.lower() in RUNNABLE_SUFFIXES and path.exists() if WINDOWS else os.access(path, os.X_OK)
+    return (path.suffix.lower() in RUNNABLE_SUFFIXES and path.exists()) if WINDOWS else os.access(path, os.X_OK)
 
 
 # --------------------------------------------------------------------------- laying out
@@ -1250,7 +1279,7 @@ class Run:
     @property
     def env(self) -> dict:
         """The steps' environment: os.environ plus $GRADLE, $GRADLE_USER_HOME, and $GRADLE_ARGS."""
-        return dict(os.environ, **{GRADLE_ENV: self.choice.binary, GRADLE_USER_HOME_ENV: str(self.user_home),
+        return dict(os.environ, **{GRADLE_ENV: _for_bash(self.choice.binary), GRADLE_USER_HOME_ENV: str(self.user_home),
                                    GRADLE_ARGS_ENV: shlex.join(self.gradle_args)})
 
     def command(self, args: str) -> GradleCommand:
@@ -1260,6 +1289,14 @@ class Run:
         return RunSummary(scenario=self.scenario.name, description=self.scenario.description, out=str(self.out_dir),
                           project=str(self.project), gradle=self.choice.binary, gradle_version=self.choice.version,
                           gradle_args=self.gradle_args or None, gradle_user_home=str(self.user_home), **fields)
+
+
+def _for_bash(binary: str) -> str:
+    """The binary as $GRADLE: as it is, and on Windows as a full path with forward slashes, since bash on Windows
+    finds gradle.bat by that name only (it has no PATHEXT). ./gradlew.bat stays, relative to the project."""
+    if not WINDOWS or binary.startswith("./"):
+        return binary
+    return Path(shutil.which(binary) or binary).as_posix()
 
 
 def print_header(scenario: Scenario, out_dir: Path | None, user_home: Path, choice: GradleChoice, out,
@@ -1331,7 +1368,7 @@ def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
 
 def _finish(run: Run, summary: RunSummary, total: int) -> RunSummary:
     """Write summary.json and print the result: and out: lines."""
-    (run.out_dir / "summary.json").write_text(summary.to_json() + "\n", encoding="utf-8")
+    (run.out_dir / "summary.json").write_text(summary.to_json() + "\n", encoding="utf-8", newline="")
     print(f"result: {summary.status} ({len(summary.steps)}/{total} steps ran)", file=run.out)
     print_out(run)
     return summary
@@ -1507,7 +1544,8 @@ def _run_logged(argv: list[str], cwd: Path, env: dict, log_path: Path, echo) -> 
             log.write(line)
             last = line
             if echo is not None:
-                echo.write(line.decode("utf-8", errors="replace"))
+                text = line.decode("utf-8", errors="replace")
+                echo.write(text.replace("\r\n", "\n") if WINDOWS else text)   # else \r\r\n in a redirected stdout
                 echo.flush()
     if echo is not None:
         echo.write(("" if last.endswith(b"\n") else "\n") + "-" * RULE_WIDTH + "\n")
