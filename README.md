@@ -53,7 +53,7 @@ class GreeterTest {
 '''
 ```
 
-In the commands here, `gust` is `gust.py` linked onto your PATH; see
+In the commands here, `gust` is `gust.py` on your PATH as `gust`; see
 [Install](#install).
 
 Then run it:
@@ -189,9 +189,18 @@ header was printed.
 ## Install
 
 Gust is one file, `gust.py`, with no dependencies beyond the Python standard
-library. It needs Python 3.11 or newer. From the checkout, make it executable
-and link or copy it as `gust` into any directory on your PATH, such as
-`~/.local/bin` or `/usr/local/bin`:
+library. It needs Python 3.11 or newer. Download it from the latest release as
+`gust`, make it executable, and move it into any directory on your PATH, such
+as `~/.local/bin` or `/usr/local/bin`:
+
+```
+curl -fLo gust https://github.com/alllex/gust/releases/latest/download/gust.py
+chmod +x gust
+mv gust <dir-on-your-PATH>/
+```
+
+Or, from a checkout of this repository, make `gust.py` executable and link or
+copy it as `gust` into a directory on your PATH:
 
 ```
 chmod +x gust.py
