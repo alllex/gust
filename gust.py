@@ -1201,10 +1201,6 @@ def shared_home(gradle_user_home: Path | None) -> Path:
     return (gradle_user_home or gust_dir() / SHARED_HOME).resolve()
 
 
-def _needs_gradle(steps) -> bool:
-    return any(isinstance(s, RunStep) and s.kind == "gradle" for s in steps)
-
-
 def begin(run: Run, needed: bool) -> RunSummary:
     """What comes before the steps, for run and setup: the remote, the Gradle choice, the layout, the header,
     and the wrapper install. Returns the summary, with status "error" when the install failed.
@@ -1235,7 +1231,7 @@ def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
     when the output was shown.
     """
     steps = run.scenario.steps
-    summary = begin(run, needed=stop_daemons or _needs_gradle(steps))
+    summary = begin(run, needed=stop_daemons or run.scenario.counts()["gradle"] > 0)
     if summary.status != "error":                                        # a failed install: no step runs
         if stop_daemons:
             summary.stop_daemons = {"before": _stop_daemons(run, "[BEF]", "stop-daemons-before.log", full=False)}
@@ -1729,9 +1725,9 @@ def _cli_check(scenario: Scenario, gradle: str | None, user_home: Path, as_json:
         else:
             print(f"remote:   {remote.link} (not cached; fetched on run)")
     user_home.mkdir(parents=True, exist_ok=True)
-    choice = settle_gradle(scenario, gradle, root, user_home, needed=_needs_gradle(scenario.steps), may_install=True)
-    print_header(scenario, None, user_home, choice, sys.stdout, description=True)
     counts = scenario.counts()
+    choice = settle_gradle(scenario, gradle, root, user_home, needed=counts["gradle"] > 0, may_install=True)
+    print_header(scenario, None, user_home, choice, sys.stdout, description=True)
     print(f"steps: {len(scenario.steps)} ({', '.join(f'{n} {kind}' for kind, n in counts.items())})")
     print("result: ok")
     if as_json:
