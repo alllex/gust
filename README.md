@@ -65,7 +65,6 @@ Other commands:
 ```
 gust check loop.toml         # validate it and settle the Gradle binary, run nothing
 gust setup loop.toml         # set the project up, run nothing
-gust step loop.toml 2 3      # run steps 2 and 3 against the set-up project
 gust stop-daemons loop.toml  # stop the daemons of the project's Gradle
 gust flat loop.toml          # print it with setup.layout.base inlined
 gust spec                    # the whole file format, with an example
@@ -83,11 +82,9 @@ run.gradle = "help"
 EOF
 ```
 
-To go one step at a time, set the project up and then name the steps:
-`gust setup loop.toml`, then `gust step loop.toml 2` (several numbers run in
-the order given). The steps run against the project as it is, with no daemon
-stops, and `summary.json` stays as the last full run left it. A plain `run` is
-setup plus all the steps, with daemon stops before and after.
+A plain `run` is `setup` plus all the steps, with daemon stops before and
+after. With `setup` alone, the project is laid out in the out dir and no step
+runs, so you can look around in it or run Gradle there by hand.
 
 ## Scenarios
 
