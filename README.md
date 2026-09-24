@@ -1,7 +1,5 @@
 # Gust
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-
 Write a Gradle user scenario as one TOML file, then run it.
 
 **G**radle **U**ser **S**cenario **T**ool: one Python file, no dependencies.
