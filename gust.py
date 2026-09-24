@@ -100,8 +100,7 @@ run.gradle = "test"
 "build.gradle.kts" = '''
 plugins { java }
 repositories { mavenCentral() }
-dependencies { testImplementation("org.junit.jupiter:junit-jupiter:5.11.4") }
-tasks.test { useJUnitPlatform() }
+testing.suites.named<JvmTestSuite>("test") { useJUnitJupiter("5.11.4") }
 '''
 "src/test/java/demo/GreeterTest.java" = '''
 package demo;
