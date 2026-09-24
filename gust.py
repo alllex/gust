@@ -1553,28 +1553,22 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("version", help="print gust's version, the Python it runs on, and the script's path")
     sub.add_parser("spec", help="print the scenario file format")
 
-    def scenario_args(p: argparse.ArgumentParser, tmp: bool, install: bool) -> None:
+    def scenario_args(p: argparse.ArgumentParser, lays_out: bool) -> None:
+        """SCENARIO, --out, --gradle, --gradle-user-home; --tmp and a --gradle version only where the project is laid out."""
         p.add_argument("scenario", type=Path, help=SCENARIO_HELP)
         p.add_argument("--out", type=Path, metavar="DIR",
                        help="the out dir (default: <stem>.out in the working directory, or <name>.out for stdin)")
-        if tmp:
+        if lays_out:
             p.add_argument("--tmp", action="store_true", help=TMP_HELP)
-        if install:
             p.add_argument("--gradle", metavar="BIN|VERSION", help=GRADLE_HELP)
         else:
             p.add_argument("--gradle", metavar="BIN", help=BINARY_HELP)
         p.add_argument("--gradle-user-home", type=Path, metavar="DIR", help=HOME_HELP)
 
-    def step_args(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--json", action="store_true", help="print the run summary as JSON on the last line")
-        p.add_argument("--tail", type=_tail_arg, default=30, metavar="N",
-                       help="how many log lines to show after a deviation or a failed wrapper install (default: 30)")
-        p.add_argument("--show-output", action="store_true", help=SHOW_OUTPUT_HELP)
-
     p_setup = sub.add_parser("setup", help="lay the project out, and install the wrapper for a version; run no step",
                              description="Lay the project out in the out dir and, with a version in play, install its wrapper. "
                                          "No step runs. Ends in 'result: set up' or 'result: error'.")
-    scenario_args(p_setup, tmp=True, install=True)
+    scenario_args(p_setup, lays_out=True)
     p_setup.add_argument("--show-output", action="store_true", help=SHOW_OUTPUT_HELP)
     p_run = sub.add_parser(
         "run", help="setup, then stop daemons, run the steps, stop daemons",
@@ -1582,8 +1576,11 @@ def build_parser() -> argparse.ArgumentParser:
                     "goes onto every run.gradle step's command, after the step's own arguments, so it wins on a "
                     "conflict. Shell steps get it as $GRADLE_ARGS. The daemon stops, the --version probe, and the "
                     "wrapper install do not get it.")
-    scenario_args(p_run, tmp=True, install=True)
-    step_args(p_run)
+    scenario_args(p_run, lays_out=True)
+    p_run.add_argument("--json", action="store_true", help="print the run summary as JSON on the last line")
+    p_run.add_argument("--tail", type=_tail_arg, default=30, metavar="N",
+                       help="how many log lines to show after a deviation or a failed wrapper install (default: 30)")
+    p_run.add_argument("--show-output", action="store_true", help=SHOW_OUTPUT_HELP)
     p_run.add_argument("--keep-daemons", action="store_true", help="do not stop Gradle daemons before or after the steps")
     p_run.usage = p_run.format_usage().removeprefix("usage: ").rstrip("\n") + " [-- GRADLE_ARGS ...]"
     p_check = sub.add_parser(
@@ -1599,7 +1596,7 @@ def build_parser() -> argparse.ArgumentParser:
     scenario_args(sub.add_parser("stop-daemons", help="run '<gradle> --stop' in the set-up project",
                                  description="Run '<gradle> --stop' in the set-up project, stopping every daemon of that "
                                              "Gradle and user home. Needs <out>/project from 'setup' or an earlier 'run'."),
-                  tmp=False, install=False)
+                  lays_out=False)
     p_flat = sub.add_parser(
         "flat", help="print the scenario with setup.layout.base inlined",
         description="Print the scenario as TOML on stdout with setup.layout.base inlined: the layout file's files are "
