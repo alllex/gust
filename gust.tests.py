@@ -488,7 +488,7 @@ class LayoutRemoteTest(GustCase):
 
     def test_fetch_copy_reuse_and_layering(self):
         layout = f'setup.layout.remote = "{self.url}#{self.sha}"\n[setup.layout.project]\n"sub/note.txt" = "own"\n"extra.txt" = "x"'
-        steps = '[[steps]]\nedit = [{ file = "settings.gradle.kts", replace = "remote", with = "edited" }]\n[[steps]]\nrun.shell = "test -x ' + WRAPPER_FILE + '"\n'
+        steps = '[[steps]]\nedit = [{ file = "settings.gradle.kts", replace = "remote", with = "edited" }]\n[[steps]]\nrun.shell = "test ' + ("-f " if gs.WINDOWS else "-x ") + WRAPPER_FILE + '"\n'   # Windows has no mode bits
         scenario = gs.load_scenario(self.write(layout, steps).read_text(), base_dir=self.tmp)
         out_dir = self.tmp / "s.out"
         summary = self.run_scenario(scenario, out_dir, gradle="gecho", stop_daemons=False)
@@ -671,7 +671,7 @@ class LayoutRemoteTest(GustCase):
         # a leading ~ is expanded before anything else
         os.environ["HOME"] = os.environ["USERPROFILE"] = str(self.tmp)     # USERPROFILE on Windows
         summary = self.run_scenario(scenario, self.tmp / "h.out", gradle=f"~/bin/{gradle}", stop_daemons=False)
-        self.assertEqual(summary.gradle, str(self.bin / gradle))
+        self.assertEqual(Path(summary.gradle), self.bin / gradle)                # C:\...\tmp/bin/gradle.bat on Windows
         refused("~/nope/gradle", f"--gradle {str(self.tmp) + '/nope/gradle'!r}: no executable at {self.tmp / 'nope' / 'gradle'}")
         # 2. no "/": an executable on PATH or in the working directory is a binary
         summary = self.run_scenario(scenario, self.tmp / "b.out", gradle="gradle", stop_daemons=False)
@@ -1910,8 +1910,11 @@ class WindowsTest(GustCase):
 
     def test_executable_by_extension(self):
         self.patch("WINDOWS", True)
-        self.assertEqual([gs._executable(Path(n)) for n in ("gradlew.bat", "gradle.CMD", "java.exe", "gradlew", "gradle.py")],
-                         [True, True, True, False, False])
+        names = ("gradlew.bat", "gradle.CMD", "java.exe", "gradlew", "gradle.py")
+        for name in names:
+            (self.tmp / name).write_text("")
+        self.assertEqual([gs._executable(self.tmp / n) for n in names], [True, True, True, False, False])
+        self.assertFalse(gs._executable(self.tmp / "missing.bat"))                    # it must exist, as on POSIX
 
     @unittest.skipUnless(gs.WINDOWS, "Windows paths")
     def test_windows_paths(self):

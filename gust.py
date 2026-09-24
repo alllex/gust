@@ -1139,8 +1139,8 @@ def _settle_binary(value: str, exists) -> tuple[str, str | None]:
 
 
 def _executable(path: Path) -> bool:
-    """Whether the file can be run: by its mode on POSIX, by its extension (.bat, .exe, ...) on Windows."""
-    return path.suffix.lower() in RUNNABLE_SUFFIXES if WINDOWS else os.access(path, os.X_OK)
+    """Whether the file exists and can be run: by its mode on POSIX, by its extension (.bat, .exe, ...) on Windows."""
+    return path.suffix.lower() in RUNNABLE_SUFFIXES and path.exists() if WINDOWS else os.access(path, os.X_OK)
 
 
 # --------------------------------------------------------------------------- laying out
