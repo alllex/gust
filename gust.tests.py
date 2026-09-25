@@ -73,11 +73,6 @@ def write_script(where, name, code):
     return launcher
 
 
-def gradle_env(binary):
-    """$GRADLE for a binary given by its path: on Windows with forward slashes, for bash."""
-    return Path(binary).as_posix() if gs.WINDOWS else str(binary)
-
-
 # A stand-in for Gradle. On `NAME wrapper --gradle-version V ...`, a copy of it becomes the project's wrapper,
 # but only inside a Gradle build (with a settings file), as with Gradle's wrapper task. On `--version`, a
 # Gradle banner is printed. Anything else is echoed, after its name.
@@ -1178,7 +1173,7 @@ with = "b"
     def test_shell_step_sees_gradle_env(self):
         gecho = self.gecho
         summary = self.run_text('name = "g2"\n[[steps]]\nrun.shell = "echo using $GRADLE"', gradle=str(gecho))
-        self.assertEqual((self.out_dir / summary.steps[0].log).read_text().strip(), f"using {gradle_env(gecho)}")
+        self.assertEqual((self.out_dir / summary.steps[0].log).read_text().strip(), f"using {Path(gecho).as_posix() if gs.WINDOWS else gecho}")   # forward slashes for bash
         self.assertNotIn("using /", self.out.getvalue())
 
     def test_gradle_step_via_dummy_binary(self):
