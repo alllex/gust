@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Check the tag against the version in gust.py
+        run: |
+          if [[ ! "$TAG" =~ ^v[1-9][0-9]*$ ]]; then
+            echo "::error::tag $TAG is not v<N> with N a plain number"
+            exit 1
+          fi
+          version="$(python -c 'import gust; print(gust.__version__)')"
+          if [[ "$version" != "${TAG#v}" ]]; then
+            echo "::error::gust.py at $TAG is at version \"$version\", not \"${TAG#v}\""
+            exit 1
+          fi
+      - run: python gust.tests.py
+      - name: Check that no release exists for the tag
+        run: |
+          tags="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name')"
+          if grep -Fxq "$TAG" <<< "$tags"; then
+            echo "::error::a release for $TAG already exists, possibly as a draft"
+            exit 1
+          fi
+      - name: Create a draft release with gust.py
+        run: gh release create "$TAG" --draft --verify-tag --notes "" gust.py
