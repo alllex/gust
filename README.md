@@ -144,6 +144,8 @@ It holds:
 
 - `project/`
 - one log per run step
+- with `run --trace`, Gradle's build operation trace for each Gradle step, as
+  `step-NN-ops-log.txt`
 - the daemon-stop logs
 - `summary.json`, also on stdout with `--json`
 
