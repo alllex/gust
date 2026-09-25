@@ -1346,8 +1346,8 @@ class CliTest(GustCase):
         code, out, _ = self.cli("version")
         self.assertEqual(code, gs.EXIT_OK)
         lines = out.splitlines()
-        self.assertEqual(gs.__version__, "10")
-        self.assertEqual(lines[0], "gust 10")
+        self.assertRegex(gs.__version__, r"^[1-9][0-9]*(-dev)?$")
+        self.assertEqual(lines[0], f"gust {gs.__version__}")
         self.assertTrue(lines[1].startswith("python 3."))
         self.assertEqual(lines[2], f"script {Path(gs.__file__).resolve()}")
 
