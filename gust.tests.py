@@ -1,4 +1,4 @@
-"""Unit tests for gust.py. Run: python3 gust.tests.py
+"""Unit tests for gust.py, and for the version handling in .github/release.py. Run: python3 gust.tests.py
 
 Offline, against a local git fixture repository and fake Gradle binaries, written in Python.
 Needs on PATH: git, and the POSIX tools the shell steps use (/bin/sh, echo, grep, test, false, printf).
@@ -7,6 +7,7 @@ Nothing is written outside per-test temporary directories: each test gets its ow
 """
 
 import contextlib
+import importlib.util
 import io
 import json
 import os
@@ -1833,6 +1834,38 @@ class VersionGateTest(unittest.TestCase):
         self.assertLess(gate, first_def)
         for line in source[:gate]:
             self.assertFalse(line.startswith("import ") and line != "import sys", line)
+
+
+class ReleaseScriptTest(unittest.TestCase):
+    """The parts of .github/release.py that run no git: the version line and the versions of a release."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("release", Path(gs.__file__).parent / ".github" / "release.py")
+        cls.release = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.release)
+
+    def test_version_of_gust_py(self):
+        text = Path(gs.__file__).read_text(encoding="utf-8")
+        self.assertEqual(self.release.read_version(text), gs.__version__)
+
+    def test_release_versions(self):
+        r = self.release
+        self.assertEqual(r.release_versions("11-dev"), ("11", "12-dev"))
+        self.assertEqual(r.release_versions("99-dev"), ("99", "100-dev"))
+        for version in ("11", "0-dev", "011-dev", "11-dev1", "11.1-dev", "v11-dev", "-dev", " 11-dev", "11-DEV"):
+            with self.assertRaises(r.ReleaseError, msg=version):
+                r.release_versions(version)
+
+    def test_with_version(self):
+        r = self.release
+        text = 'a = 1\n__version__ = "11-dev"\nb = "__version__ = 2"\n'
+        self.assertEqual(r.with_version(text, "11"), 'a = 1\n__version__ = "11"\nb = "__version__ = 2"\n')
+        self.assertEqual(r.with_version(text.replace("\n", "\r\n"), "12-dev"),
+                         'a = 1\r\n__version__ = "12-dev"\r\nb = "__version__ = 2"\r\n')
+        for bad in ("a = 1\n", '__version__ = "1"\n__version__ = "2"\n', "__version__ = '1'\n", ' __version__ = "1"\n'):
+            with self.assertRaises(r.ReleaseError, msg=bad):
+                r.with_version(bad, "3")
 
 
 if __name__ == "__main__":
