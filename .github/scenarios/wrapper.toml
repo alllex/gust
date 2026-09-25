@@ -1,0 +1,12 @@
+description = "With --gradle 9.7.1: the wrapper is installed, then run by a Gradle step and by a shell step."
+
+[[steps]]
+name = "the wrapper runs as a Gradle step"
+run.gradle = { args = "help", expect = { output = ["Welcome to Gradle 9.7.1"] } }
+
+[[steps]]
+name = "the wrapper runs from bash as $GRADLE"
+run.shell = { command = '"$GRADLE" help', expect = { output = ["Welcome to Gradle 9.7.1"] } }
+
+[setup.layout.project]
+"settings.gradle.kts" = 'rootProject.name = "wrapper"'

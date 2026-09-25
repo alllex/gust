@@ -38,8 +38,7 @@ run.gradle = "test"
 "build.gradle.kts" = '''
 plugins { java }
 repositories { mavenCentral() }
-dependencies { testImplementation("org.junit.jupiter:junit-jupiter:5.11.4") }
-tasks.test { useJUnitPlatform() }
+testing.suites.named<JvmTestSuite>("test") { useJUnitJupiter("5.11.4") }
 '''
 "src/test/java/demo/GreeterTest.java" = '''
 package demo;
@@ -118,8 +117,8 @@ The Gradle the steps run with is the first of:
    layout needs a settings file.
 3. The scenario's `setup.gradle`: `"wrapper"` for the project's own wrapper,
    which must exist, or a version.
-4. The project's own `./gradlew`, when the checkout or the set-up project has
-   one.
+4. The project's own `./gradlew` (`gradlew.bat` on Windows), when the checkout
+   or the set-up project has one.
 5. `gradle` from PATH.
 
 About that choice:
@@ -142,7 +141,7 @@ Everything goes into the out dir:
 | --- | --- |
 | default | `loop.out/` in the working directory, after the scenario file's stem (the scenario's name for stdin) |
 | `--out DIR` | `DIR` |
-| `--tmp` | a throwaway dir, `/tmp/gust-<yymmdd>/loop.<HHMMSS>.out/` |
+| `--tmp` | a throwaway dir, `/tmp/gust-<yymmdd>/loop.<HHMMSS>.out/` (under the temp dir on Windows) |
 
 It holds:
 
@@ -187,9 +186,9 @@ header was printed.
 ## Install
 
 Gust is one file, `gust.py`, with no dependencies beyond the Python standard
-library. It needs Python 3.11 or newer. Download it from the latest release as
-`gust`, make it executable, and move it into any directory on your PATH, such
-as `~/.local/bin` or `/usr/local/bin`:
+library. It needs Python 3.11 or newer, and runs on macOS, Linux, and Windows.
+Download it from the latest release as `gust`, make it executable, and move it
+into any directory on your PATH, such as `~/.local/bin` or `/usr/local/bin`:
 
 ```
 curl -fLo gust https://github.com/alllex/gust/releases/latest/download/gust.py
@@ -207,6 +206,11 @@ ln -s "$PWD/gust.py" <dir-on-your-PATH>/gust
 
 Without `gust` on your PATH, run `python3 gust.py` wherever `gust` appears here.
 
+On Windows, run `python gust.py`. Shell steps there run with the bash of
+[Git for Windows](https://gitforwindows.org), so a scenario file works the same
+on every system, and the project's wrapper is `gradlew.bat`. `gust spec` has
+the details.
+
 ## Tests
 
 ```
@@ -214,7 +218,8 @@ python3 gust.tests.py
 ```
 
 They run offline against a local git repository and fake Gradle binaries, and
-need `git` on PATH.
+need `git` on PATH. On Windows, run `python gust.tests.py`, with Git for
+Windows installed.
 
 ## License
 

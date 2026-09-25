@@ -1,0 +1,8 @@
+description = "A run that leaves its daemon behind, then a setup over the same out dir."
+
+[[steps]]
+name = "a build that starts a daemon"
+run.gradle = "help"
+
+[setup.layout.project]
+"settings.gradle.kts" = 'rootProject.name = "cycle"'
