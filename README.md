@@ -177,8 +177,8 @@ The working directory also gets `.gust/`, a cache that is safe to delete (set
 | `2` | bad input (a failed precondition, a malformed scenario, bad arguments), a step that could not be carried out, or a failed wrapper install |
 
 The preconditions (Python version, scenario shape, Gradle binary, git) are all
-checked before the out dir is touched, and `summary.json` is there whenever the
-header was printed.
+checked before the out dir is touched. `summary.json` is written for `gust run`
+only, and there it is present whenever the header was printed.
 
 ## Install
 

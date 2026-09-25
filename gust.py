@@ -473,8 +473,9 @@ Exit codes: 0 every step as expected; 1 a run step deviated from its
 expectation; 2 bad input (a failed precondition, a malformed scenario, bad
 arguments), a step that could not be carried out (an edit whose text was not
 found, a write onto a directory), or a failed wrapper install. summary.json is
-present whenever the header was printed: on exit 1, and on exit 2 after the
-header. The daemon stops never change the exit code.
+written for run only, and there it is present whenever the header was printed:
+on exit 1, and on exit 2 after the header. The daemon stops never change the
+exit code.
 """
 
 
