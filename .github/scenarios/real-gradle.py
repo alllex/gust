@@ -39,6 +39,11 @@ def main():
     gust_cli(0, "run", "loop.toml")                                        # Gradle from PATH
     if "greetsByName() FAILED" not in (WORK / "loop.out" / "step-01.log").read_text(encoding="utf-8", errors="replace"):
         sys.exit("loop.toml: the first step must fail on the test, not on the build")
+    gust_cli(0, "run", "loop.toml", "--trace", "--out", "traced.out")      # a build operation trace per Gradle step
+    traces = {t.name: t.stat().st_size for t in (WORK / "traced.out").glob("step-01-ops*")}
+    print(f"traces of step 1: {traces}")
+    if not traces or not all(traces.values()):
+        sys.exit("--trace: step-01-ops* must exist in the out dir and be non-empty")
     gust_cli(0, "run", "wrapper.toml", "--gradle", "9.7.1")                # the wrapper install and gradlew.bat
     gust_cli(0, "run", "shell.toml")
     # a daemon left running, then a setup over its project

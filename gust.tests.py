@@ -103,6 +103,13 @@ if ARGS[:1] == ["--gradle-user-home"] and ARGS[2:3] == ["--version"]:
 print(*ARGS)
 """
 
+# `tracer`: gecho plus the file named by Gradle's trace property, <base>-log.txt, with one line in it.
+TRACER = GECHO + """\
+for arg in ARGS:
+    if arg.startswith("-Dorg.gradle.internal.operations.trace="):
+        Path(arg.split("=", 1)[1] + "-log.txt").write_text('{"id": 1}\\n')
+"""
+
 NOT_GRADLE = 'print("hello")\n'                   # runs, but is no Gradle
 FAILING = "sys.exit(1)\n"                         # fails on every call
 WRAPPER, WRAPPER_FILE = gs.WRAPPER, gs.WRAPPER_FILE   # ./gradlew and gradlew; ./gradlew.bat and gradlew.bat on Windows
@@ -1576,6 +1583,32 @@ class CliTest(GustCase):
             code, _, err = self.cli(*argv)
             self.assertEqual(code, gs.EXIT_ERROR)
             self.assertEqual(err.strip(), f"error: arguments after -- are accepted by run only ({name} runs no Gradle step)")
+
+    def test_trace(self):
+        self.script("tracer", TRACER)
+        s = self.scenario_file('name = "t"\n[[steps]]\nrun.gradle = "help"\n[[steps]]\nrun.shell = "echo args=$GRADLE_ARGS"\n'
+                               '[[steps]]\nrun.gradle = "build"')
+        out_dir, prop = self.tmp / "s.out", "-Dorg.gradle.internal.operations.trace"
+        code, out, _ = self.cli("run", str(s), "--gradle", "tracer", "--trace", "--keep-daemons", "--json", "--", "--offline")
+        self.assertEqual(code, gs.EXIT_OK)
+        self.assertEqual((out_dir / "step-01.log").read_text().strip(),
+                         f"{home_arg()} {prop}={out_dir / 'step-01-ops'} {prop}.tree=false help --offline")   # first, so args win
+        self.assertEqual((out_dir / "step-02.log").read_text().strip(), "args=--offline")                     # shell steps: untraced
+        self.assertEqual((out_dir / "step-03-ops-log.txt").read_text(), '{"id": 1}\n')
+        self.assertIn("[1/3] Run: gradle help\n$ tracer help --offline\nok: exit 0 in ", out)                  # shown without it
+        self.assertRegex(out, r"-> step-01\.log, step-01-ops-log\.txt\n\[2/3\].*\n.*\nok: .* -> step-02\.log\n")
+        steps = json.loads(out.rstrip("\n").splitlines()[-1])["steps"]
+        self.assertEqual([step.get("trace") for step in steps], ["step-01-ops-log.txt", None, "step-03-ops-log.txt"])
+        self.assertEqual(steps[0]["command"], "tracer help --offline")
+        # no file, no trace: gecho has no trace support
+        code, out, _ = self.cli("run", str(s), "--gradle", "gecho", "--trace", "--keep-daemons", "--json")
+        self.assertIn(f"{prop}={out_dir / 'step-01-ops'}", (out_dir / "step-01.log").read_text())
+        self.assertNotIn("ops-log", out)
+        # off by default
+        code, out, _ = self.cli("run", str(s), "--gradle", "tracer", "--keep-daemons", "--json")
+        self.assertEqual((out_dir / "step-01.log").read_text().strip(), f"{home_arg()} help")
+        self.assertEqual(sorted(p.name for p in out_dir.glob("*ops*")), [])
+        self.assertNotIn("trace", json.loads(out.rstrip("\n").splitlines()[-1])["steps"][0])
 
 
 class FlatTest(GustCase):

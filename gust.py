@@ -57,6 +57,7 @@ REMOTES_DIR = "remotes"                   # in .gust: one checkout per remote
 GRADLE_ENV = "GRADLE"            # for shell steps: the Gradle binary
 GRADLE_USER_HOME_ENV = "GRADLE_USER_HOME"
 GRADLE_ARGS_ENV = "GRADLE_ARGS"  # for shell steps: the arguments after --, shell-quoted
+TRACE_PROPERTY = "org.gradle.internal.operations.trace"   # Gradle's internal build operation trace, for --trace
 WRAPPER = "./gradlew.bat" if WINDOWS else "./gradlew"   # the project's own wrapper, relative to the project dir
 WRAPPER_FILE = WRAPPER[2:]
 RUNNABLE_SUFFIXES = (".exe", ".bat", ".cmd", ".com")      # on Windows, the extensions of a file that can be run
@@ -212,6 +213,8 @@ the working directory, named after the scenario file's stem (testing-loop.toml
   <out>/install-wrapper.log
                          output of the wrapper install, when a Gradle version is in play
   <out>/step-NN.log      output of run step NN
+  <out>/step-NN-ops-log.txt
+                         with --trace: the build operation trace of run.gradle step NN
   <out>/stop-daemons-before.log, <out>/stop-daemons-after.log
                          output of the daemon stops around the steps
   <out>/summary.json     the summary of the run
@@ -287,7 +290,7 @@ Commands
                                   wrapper; no step runs. Ends in `result: set up` (or
                                   `result: error` after a failed install) and the out: line.
   run SCENARIO [--out DIR | --tmp] [--gradle BIN|VERSION] [--gradle-user-home DIR] [--json] [--tail N]
-               [--show-output] [--keep-daemons] [-- GRADLE_ARGS ...]
+               [--show-output] [--keep-daemons] [--trace] [-- GRADLE_ARGS ...]
                                   setup, then stop daemons, run the steps, stop daemons
   stop-daemons SCENARIO [--out DIR] [--gradle BIN] [--gradle-user-home DIR]
                                   run '<gradle> --stop' in <out>/project
@@ -364,16 +367,29 @@ and an outcome line:
 
 Output and log tails sit between two 80-column rule lines: the opening one ends
 in the log file name (or "last K of M lines of <log>"), the closing one is all
-dashes. Commands are shown without the --gradle-user-home pair. The outcome
-prefixes ok:, DEVIATION:, and ERROR: go to stdout; a precondition failure is a
-single `error: ...` line on stderr, with nothing on stdout. For stop-daemons
-the console has the header and a full [STOP] block (label, `$` line, outcome).
+dashes. Commands are shown without the --gradle-user-home pair (or the trace
+properties of --trace). The outcome prefixes ok:, DEVIATION:, and ERROR: go to
+stdout; a precondition failure is a single `error: ...` line on stderr, with
+nothing on stdout. For stop-daemons the console has the header and a full
+[STOP] block (label, `$` line, outcome).
 
 With --json (run, check), the summary is printed as one JSON object on
 the last line of stdout; for run it is also in <out>/summary.json. Its keys
 follow the TOML's: `name` and `expect` per step, `description` at the top, and
 `gradle_args` for the arguments after --.
 With --keep-daemons (run), both daemon stops are left out.
+With --trace (run), each run.gradle step runs with Gradle's internal trace
+properties right after the home pair:
+
+  -Dorg.gradle.internal.operations.trace=<out>/step-NN-ops
+  -Dorg.gradle.internal.operations.trace.tree=false
+
+The step's build operations, one JSON object per line, end up in
+<out>/step-NN-ops-log.txt (Gradle 4.0 and newer). With Gradle 8.10 and older,
+step-NN-ops-tree.json and step-NN-ops-tree.txt appear next to it too. Once the
+file exists, its name follows the log's on the outcome line (`-> step-01.log,
+step-01-ops-log.txt`) and is the step's trace in the summary. Shell steps are
+not traced; put the property in the step's command to trace one.
 --tail N is how many log lines are shown after a deviation or a failed wrapper
 install (default 30).
 With --show-output, each run step's output appears on the console as it runs,
@@ -963,15 +979,20 @@ class GradleCommand:
     binary: str
     args: str
     user_home: Path
+    trace: Path | None = None    # with --trace: the trace's base path; the file is <trace>-log.txt
 
     @property
     def full(self) -> str:
-        """The command as run. The home comes first, so a --gradle-user-home in args takes precedence."""
-        return f"{shlex.quote(self.binary)} --gradle-user-home {shlex.quote(str(self.user_home))} {self.args}".rstrip()
+        """The command as run. The home and the trace come first, so the same options in args take precedence.
+        Trace trees are off by default from Gradle 9.3; with the .tree flag they stay off in 8.11 to 9.2 too."""
+        hidden = ["--gradle-user-home", str(self.user_home)]
+        if self.trace:
+            hidden += [f"-D{TRACE_PROPERTY}={self.trace}", f"-D{TRACE_PROPERTY}.tree=false"]
+        return f"{shlex.quote(self.binary)} {shlex.join(hidden)} {self.args}".rstrip()
 
     @property
     def shown(self) -> str:
-        """The command as shown on the console and in the summary: without the --gradle-user-home pair."""
+        """The command as shown on the console and in the summary: without the --gradle-user-home pair and the trace."""
         return f"{shlex.quote(self.binary)} {self.args}".rstrip()
 
 
@@ -1211,6 +1232,7 @@ class StepResult:
     exit_code: int | None = None
     duration_s: float | None = None
     log: str | None = None       # relative to the out dir
+    trace: str | None = None     # with --trace: the build operation trace, relative to the out dir, once it exists
     command: str | None = None   # as shown, without the --gradle-user-home pair
     files: list[str] | None = None
     error: str | None = None
@@ -1257,6 +1279,7 @@ class Run:
     out: object = None           # the console stream (default: sys.stdout)
     tail: int = 30
     show_output: bool = False
+    trace: bool = False
     gradle_args: list[str] = field(default_factory=list)
     choice: GradleChoice | None = None
 
@@ -1275,8 +1298,8 @@ class Run:
         return dict(os.environ, **{GRADLE_ENV: _for_bash(self.choice.binary), GRADLE_USER_HOME_ENV: str(self.user_home),
                                    GRADLE_ARGS_ENV: shlex.join(self.gradle_args)})
 
-    def command(self, args: str) -> GradleCommand:
-        return GradleCommand(self.choice.binary, args, self.user_home)
+    def command(self, args: str, trace: Path | None = None) -> GradleCommand:
+        return GradleCommand(self.choice.binary, args, self.user_home, trace)
 
 
 def _for_bash(binary: str) -> str:
@@ -1370,12 +1393,13 @@ def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
 
 
 def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
+    log_rel, trace_rel = f"step-{index:02d}.log", f"step-{index:02d}-ops-log.txt"   # the trace file: its base + -log.txt
+    trace = run.out_dir / trace_rel.removesuffix("-log.txt") if run.trace and step.kind == "gradle" else None
     if step.kind == "gradle":
-        command = run.command(f"{step.command} {shlex.join(run.gradle_args)}".rstrip())   # the arguments after -- go last
+        command = run.command(f"{step.command} {shlex.join(run.gradle_args)}".rstrip(), trace)   # the arguments after -- go last
         argv, shown = gradle_argv(command.full, run.project), command.shown
     else:
         argv, shown = shell_argv(step.command), step.command      # shown as written
-    log_rel = f"step-{index:02d}.log"
     print(f"$ {shown}", file=run.out)
     started = time.monotonic()
     exit_code = _run_logged(argv, run.project, run.env, run.out_dir / log_rel, run.out if run.show_output else None)
@@ -1383,14 +1407,17 @@ def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
     outcome = "pass" if exit_code == 0 else "fail"
     output_text = (run.out_dir / log_rel).read_text(encoding="utf-8", errors="replace")   # CRLF read as LF
     deviations = step.expect.deviations(exit_code, output_text)
+    traced = trace is not None and (run.out_dir / trace_rel).is_file()
     result = StepResult(
         index=index, kind=step.kind, name=step.label(), outcome=outcome, expect=step.expect.to_json(),
-        deviations=deviations, exit_code=exit_code, duration_s=round(duration, 1), log=log_rel, command=shown,
+        deviations=deviations, exit_code=exit_code, duration_s=round(duration, 1), log=log_rel,
+        trace=trace_rel if traced else None, command=shown,
     )
     checks = len(step.expect.output) + len(step.expect.no_output)
     checks_note = f", {checks} output check{'s' if checks != 1 else ''}" if checks else ""
     verdict = "DEVIATION" if deviations else "ok"
-    print(f"{verdict}: exit {exit_code}{checks_note} in {duration:.1f}s -> {log_rel}", file=run.out)
+    print(f"{verdict}: exit {exit_code}{checks_note} in {duration:.1f}s -> {log_rel}" + (f", {trace_rel}" if traced else ""),
+          file=run.out)
     for deviation in deviations:
         print(f"  {deviation}", file=run.out)
     return result
@@ -1700,6 +1727,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help="how many log lines to show after a deviation or a failed wrapper install (default: 30)")
     p_run.add_argument("--show-output", action="store_true", help=SHOW_OUTPUT_HELP)
     p_run.add_argument("--keep-daemons", action="store_true", help="do not stop Gradle daemons before or after the steps")
+    p_run.add_argument("--trace", action="store_true",
+                       help="record a build operation trace for each run.gradle step, as step-NN-ops-log.txt in the "
+                            "out dir; shell steps are not traced")
     p_run.usage = p_run.format_usage().removeprefix("usage: ").rstrip("\n") + " [-- GRADLE_ARGS ...]"
     p_check = sub.add_parser(
         "check", help="validate the scenario and settle the Gradle binary; run nothing",
@@ -1765,7 +1795,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "check":
             return _cli_check(scenario, args.gradle, user_home, args.json)
         run = Run(scenario, out_dir, user_home, gradle=args.gradle, tail=getattr(args, "tail", 30),
-                  show_output=getattr(args, "show_output", False), gradle_args=gradle_args)
+                  show_output=getattr(args, "show_output", False), trace=getattr(args, "trace", False),
+                  gradle_args=gradle_args)
         if args.command == "stop-daemons":
             return _cli_stop_daemons(run, str(args.scenario))
         if args.command == "setup":
