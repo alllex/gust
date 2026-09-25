@@ -211,10 +211,10 @@ the working directory, named after the scenario file's stem (testing-loop.toml
   <out>/project/         the laid-out project, where run steps execute
   <out>/install-wrapper.log
                          output of the wrapper install, when a Gradle version is in play
-  <out>/step-NN.log      output of run step NN (overwritten when `step` runs it again)
+  <out>/step-NN.log      output of run step NN
   <out>/stop-daemons-before.log, <out>/stop-daemons-after.log
                          output of the daemon stops around the steps
-  <out>/summary.json     the summary of the last full run; `step` leaves it as it is
+  <out>/summary.json     the summary of the run
   <out>/.gust-run        marker: the directory was made by gust and may be replaced or
                          removed on a later run
 
@@ -231,7 +231,7 @@ With --tmp (run and setup) the out dir is
   /tmp/gust-<yymmdd>/<stem>.<HHMMSS>.out
 
 in local time at invocation, with <stem> as above; the same rules apply to it.
-To step through such a run or stop its daemons, pass --out <the printed path>.
+To stop the daemons of such a run, pass --out <the printed path>.
 --tmp and --out cannot be combined.
 
 The .gust directory
@@ -289,12 +289,6 @@ Commands
   run SCENARIO [--out DIR | --tmp] [--gradle BIN|VERSION] [--gradle-user-home DIR] [--json] [--tail N]
                [--show-output] [--keep-daemons] [-- GRADLE_ARGS ...]
                                   setup, then stop daemons, run the steps, stop daemons
-  step SCENARIO N [N ...] [--out DIR] [--gradle BIN] [--gradle-user-home DIR] [--json] [--tail N]
-               [--show-output] [-- GRADLE_ARGS ...]
-                                  run only the listed steps (1-based, numbered as in run's output),
-                                  in that order, against the set-up project as it is: no setup, no
-                                  install, no daemon stops, and summary.json stays as the last full
-                                  run left it. Needs <out>/project from `setup` or an earlier `run`.
   stop-daemons SCENARIO [--out DIR] [--gradle BIN] [--gradle-user-home DIR]
                                   run '<gradle> --stop' in <out>/project
   flat SCENARIO                   print the scenario as TOML with setup.layout.base inlined: base is
@@ -316,7 +310,7 @@ Commands
      directory (gradle, grl) is a binary.
   3. Anything else must be a Gradle version (9.7.1, 9.8.0-rc-2). Its wrapper
      is installed first, with gradle from PATH (see Gradle version), which
-     needs a settings file in the layout. Nothing is installed by step or
+     needs a settings file in the layout. Nothing is installed by
      stop-daemons, so there --gradle takes a binary only (BIN).
 A value that fits none of these is refused before the out dir is touched, with
 the value and what was tried in the message.
@@ -332,7 +326,7 @@ That doubles as a check that the binary runs and is Gradle; if not, the exit
 code is 2, before the out dir is touched. For a wrapper, the probe can include
 the distribution download, which the first step needs anyway. A version still
 to be installed is shown as given; once installed, its wrapper is probed like
-any binary (step, stop-daemons). The note is the source, (default),
+any binary (stop-daemons). The note is the source, (default),
 (scenario), or (--gradle), plus ", installed by gradle" when the wrapper is
 installed first. In check, "; not checked, remote not cached" is added when the
 remote is not fetched yet. The summary has the version as gradle_version. When
@@ -363,9 +357,9 @@ and an outcome line:
                                          step: `ok: 2 files written`, `ok: 1 file edited`, or
                                          `ERROR: <what went wrong>`.
   [AFT] Stop Gradle daemons -> stop-daemons-after.log
-  result: ok (3/3 steps ran)             or deviated, or error; out of the steps listed
+  result: ok (3/3 steps ran)             or deviated, or error; out of the scenario's steps
   out:      <out dir>                    the out dir again, as the last line, to have the path at hand
-                                         after a long console (run, step, setup, stop-daemons; with
+                                         after a long console (run, setup, stop-daemons; with
                                          --json the JSON line follows it)
 
 Output and log tails sit between two 80-column rule lines: the opening one ends
@@ -375,7 +369,7 @@ prefixes ok:, DEVIATION:, and ERROR: go to stdout; a precondition failure is a
 single `error: ...` line on stderr, with nothing on stdout. For stop-daemons
 the console has the header and a full [STOP] block (label, `$` line, outcome).
 
-With --json (run, step, check), the summary is printed as one JSON object on
+With --json (run, check), the summary is printed as one JSON object on
 the last line of stdout; for run it is also in <out>/summary.json. Its keys
 follow the TOML's: `name` and `expect` per step, `description` at the top, and
 `gradle_args` for the arguments after --.
@@ -386,7 +380,7 @@ With --show-output, each run step's output appears on the console as it runs,
 untouched, between the step line and its outcome line, inside the rule lines.
 step-NN.log is written either way, and no tail follows a deviation. The daemon
 stops are never shown; the install block is.
--- GRADLE_ARGS ... (run and step): everything after a literal -- is appended
+-- GRADLE_ARGS ... (run): everything after a literal -- is appended
 to every run.gradle step's command, after the step's own arguments, so on a
 conflict the command line wins over the scenario:
 
@@ -463,9 +457,8 @@ scenario's path (or stdin).
   - --gradle, if given, is a binary or a version as described under Commands;
     without it, the default Gradle is checked the same way when a Gradle step
     or a daemon stop needs it.
-  - For step and stop-daemons: <out> holds a set-up project (the marker and
-    <out>/project), every step number is within the scenario's steps, and
-    --gradle, if given, is a binary.
+  - For stop-daemons: <out> holds a set-up project (the marker and
+    <out>/project), and --gradle, if given, is a binary.
   - With setup.layout.remote: git is on PATH and the link has a supported form.
     The checkout is fetched (or its HEAD compared) before the out dir is
     touched, and edit targets are checked against it.
@@ -1016,9 +1009,9 @@ def git_bash() -> str:
                     f"above {git}'s exec path {exec_path!r}")
 
 
-def _check_shell(steps) -> None:
-    """Find the bash for the shell steps among these, if any, before the out dir is touched."""
-    if WINDOWS and any(isinstance(s, RunStep) and s.kind == "shell" for s in steps):
+def _check_shell(scenario: Scenario) -> None:
+    """Find the bash for the scenario's shell steps, if it has any, before the out dir is touched."""
+    if WINDOWS and scenario.counts()["shell"]:
         git_bash()
 
 
@@ -1088,7 +1081,7 @@ def settle_gradle(scenario: Scenario, cli_value: str | None, root: Path | None, 
     it, or None for an inline layout or an unfetched remote.
     needed is whether a Gradle step or a daemon stop will run. When it is False and there is no
     --gradle and no version to install, the default is neither checked nor probed.
-    may_install is False once the project is set up (step, stop-daemons). A version from --gradle is
+    may_install is False once the project is set up (stop-daemons). A version from --gradle is
     refused then, and the scenario's version means the wrapper installed at setup, probed like any
     binary.
     """
@@ -1252,9 +1245,9 @@ class RunSummary:
 
 @dataclass
 class Run:
-    """The command-line state of a run, setup, step, or stop-daemons command.
+    """The command-line state of a run, setup, or stop-daemons command.
 
-    gradle is the --gradle value as given; choice is settled later, in begin() or before step and stop-daemons.
+    gradle is the --gradle value as given; choice is settled later, in begin() or before stop-daemons.
     """
     scenario: Scenario
     out_dir: Path
@@ -1283,11 +1276,6 @@ class Run:
 
     def command(self, args: str) -> GradleCommand:
         return GradleCommand(self.choice.binary, args, self.user_home)
-
-    def summary(self, **fields) -> RunSummary:
-        return RunSummary(scenario=self.scenario.name, description=self.scenario.description, out=str(self.out_dir),
-                          project=str(self.project), gradle=self.choice.binary, gradle_version=self.choice.version,
-                          gradle_args=self.gradle_args or None, gradle_user_home=str(self.user_home), **fields)
 
 
 def _for_bash(binary: str) -> str:
@@ -1323,10 +1311,6 @@ def shared_home(gradle_user_home: Path | None) -> Path:
     return (gradle_user_home or gust_dir() / SHARED_HOME).resolve()
 
 
-def _needs_gradle(steps) -> bool:
-    return any(isinstance(s, RunStep) and s.kind == "gradle" for s in steps)
-
-
 def begin(run: Run, needed: bool) -> RunSummary:
     """What comes before the steps, for run and setup: the remote, the Gradle choice, the layout, the header,
     and the wrapper install. Returns the summary, with status "error" when the install failed.
@@ -1342,7 +1326,9 @@ def begin(run: Run, needed: bool) -> RunSummary:
     run.choice = settle_gradle(scenario, run.gradle, root, run.user_home, needed=needed, may_install=True)
     lay_out(scenario, run.out_dir)
     print_header(scenario, run.out_dir, run.user_home, run.choice, out)
-    summary = run.summary(remote=remote_info)
+    summary = RunSummary(scenario=scenario.name, description=scenario.description, out=str(run.out_dir),
+                         project=str(run.project), gradle=run.choice.binary, gradle_version=run.choice.version,
+                         gradle_args=run.gradle_args or None, gradle_user_home=str(run.user_home), remote=remote_info)
     if run.choice.install:
         summary.install = _install_wrapper(run)
         if summary.install["exit_code"] != 0:                            # a failed install ends the run as an error
@@ -1351,77 +1337,35 @@ def begin(run: Run, needed: bool) -> RunSummary:
 
 
 def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
-    """Set up, stop daemons, run the steps up to the first deviation or error, and stop daemons again."""
-    _check_shell(run.scenario.steps)
-    summary = begin(run, needed=stop_daemons or _needs_gradle(run.scenario.steps))
-    total = len(run.scenario.steps)
-    if summary.status == "error":
-        return _finish(run, summary, total)
-    if stop_daemons:
-        summary.stop_daemons = {"before": _stop_daemons(run, "[BEF]", "stop-daemons-before.log", full=False)}
-    summary.steps, summary.status = _execute_steps(run, range(1, total + 1))
-    if stop_daemons:
-        summary.stop_daemons["after"] = _stop_daemons(run, "[AFT]", "stop-daemons-after.log", full=False)
-    return _finish(run, summary, total)
+    """Set up, stop daemons, run the steps up to the first deviation or error, and stop daemons again.
 
-
-def _finish(run: Run, summary: RunSummary, total: int) -> RunSummary:
-    """Write summary.json and print the result: and out: lines."""
+    Ends with summary.json and the result: and out: lines. No log tail is printed after a deviation
+    when the output was shown.
+    """
+    steps = run.scenario.steps
+    _check_shell(run.scenario)
+    summary = begin(run, needed=stop_daemons or run.scenario.counts()["gradle"] > 0)
+    if summary.status != "error":                                        # a failed install: no step runs
+        if stop_daemons:
+            summary.stop_daemons = {"before": _stop_daemons(run, "[BEF]", "stop-daemons-before.log", full=False)}
+        for i, step in enumerate(steps, start=1):
+            print(f"[{i}/{len(steps)}] {step.label()}", file=run.out)
+            result = _run_command(run, step, i) if isinstance(step, RunStep) else _change_files(run, step, i)
+            summary.steps.append(result)
+            if result.outcome == "error":
+                summary.status = "error"
+                break
+            if result.deviated:
+                summary.status = "deviated"
+                if not run.show_output:
+                    _print_tail(run.out_dir / result.log, run.tail, run.out)
+                break
+        if stop_daemons:
+            summary.stop_daemons["after"] = _stop_daemons(run, "[AFT]", "stop-daemons-after.log", full=False)
     (run.out_dir / "summary.json").write_text(summary.to_json() + "\n", encoding="utf-8", newline="")
-    print(f"result: {summary.status} ({len(summary.steps)}/{total} steps ran)", file=run.out)
+    print(f"result: {summary.status} ({len(summary.steps)}/{len(steps)} steps ran)", file=run.out)
     print_out(run)
     return summary
-
-
-def check_set_up(out_dir: Path, scenario_ref: str) -> None:
-    """Check for a set-up project: the marker and <out>/project. scenario_ref goes into the hint."""
-    if not (out_dir / MARKER).is_file() or not (out_dir / "project").is_dir():
-        hint = "pipe the same scenario to 'gust setup -'" if scenario_ref == "-" else f"run 'gust setup {scenario_ref}'"
-        raise GustError(f"no set-up project at {out_dir / 'project'}; {hint} first")
-
-
-def run_steps(run: Run, numbers: list[int], scenario_ref: str = "<scenario>") -> RunSummary:
-    """Run only the steps with these 1-based numbers, in the given order, against the set-up project as it is.
-
-    No setup, wrapper install, or daemon stops, and summary.json is left alone. The run stops at the
-    first deviation or error. The returned summary has a full run's shape.
-    """
-    check_set_up(run.out_dir, scenario_ref)
-    total = len(run.scenario.steps)
-    for n in numbers:
-        if not 1 <= n <= total:
-            raise GustError(f"no step {n}; the scenario has {total} step{'s' if total != 1 else ''}")
-    _check_shell(run.scenario.steps[n - 1] for n in numbers)
-    run.choice = settle_gradle(run.scenario, run.gradle, run.project, run.user_home,
-                               needed=_needs_gradle(run.scenario.steps[n - 1] for n in numbers), may_install=False)
-    print_header(run.scenario, run.out_dir, run.user_home, run.choice, run.out)
-    summary = run.summary()
-    summary.steps, summary.status = _execute_steps(run, numbers)
-    print(f"result: {summary.status} ({len(summary.steps)}/{len(numbers)} steps ran)", file=run.out)
-    print_out(run)
-    return summary
-
-
-def _execute_steps(run: Run, numbers) -> tuple[list[StepResult], str]:
-    """Run the steps with these 1-based numbers in order, up to the first deviation or error.
-
-    Returns the results and the status: "ok", "deviated", or "error". No log tail is printed after
-    a deviation when the output was shown.
-    """
-    total = len(run.scenario.steps)
-    results: list[StepResult] = []
-    for i in numbers:
-        step = run.scenario.steps[i - 1]
-        print(f"[{i}/{total}] {step.label()}", file=run.out)
-        result = _run_command(run, step, i) if isinstance(step, RunStep) else _change_files(run, step, i)
-        results.append(result)
-        if result.outcome == "error":
-            return results, "error"
-        if result.deviated:
-            if not run.show_output:
-                _print_tail(run.out_dir / result.log, run.tail, run.out)
-            return results, "deviated"
-    return results, "ok"
 
 
 def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
@@ -1706,7 +1650,7 @@ GRADLE_HELP = (f"{BINARY}, or a version such as 9.7.1, whose wrapper is installe
                f"(the layout needs a settings file); {PRECEDENCE}")
 BINARY_HELP = f"{BINARY}; no version, since the project is set up already; {PRECEDENCE}"
 TMP_HELP = (f"put the out dir at {TMP_SHAPE}; "
-            "pass --out <printed path> to step through it or stop its daemons later")
+            "pass --out <printed path> to stop its daemons later")
 SHOW_OUTPUT_HELP = "also print each step's output as it runs; the log is written either way"
 SCENARIO_HELP = "the scenario file, or - to read it from stdin"
 HOME_HELP = "the Gradle user home for every Gradle invocation (default: .gust/shared-gradle-user-home)"
@@ -1726,28 +1670,22 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("version", help="print gust's version, the Python it runs on, and the script's path")
     sub.add_parser("spec", help="print the scenario file format")
 
-    def scenario_args(p: argparse.ArgumentParser, tmp: bool, install: bool) -> None:
+    def scenario_args(p: argparse.ArgumentParser, lays_out: bool) -> None:
+        """SCENARIO, --out, --gradle, --gradle-user-home; --tmp and a --gradle version only where the project is laid out."""
         p.add_argument("scenario", type=Path, help=SCENARIO_HELP)
         p.add_argument("--out", type=Path, metavar="DIR",
                        help="the out dir (default: <stem>.out in the working directory, or <name>.out for stdin)")
-        if tmp:
+        if lays_out:
             p.add_argument("--tmp", action="store_true", help=TMP_HELP)
-        if install:
             p.add_argument("--gradle", metavar="BIN|VERSION", help=GRADLE_HELP)
         else:
             p.add_argument("--gradle", metavar="BIN", help=BINARY_HELP)
         p.add_argument("--gradle-user-home", type=Path, metavar="DIR", help=HOME_HELP)
 
-    def step_args(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--json", action="store_true", help="print the run summary as JSON on the last line")
-        p.add_argument("--tail", type=_tail_arg, default=30, metavar="N",
-                       help="how many log lines to show after a deviation or a failed wrapper install (default: 30)")
-        p.add_argument("--show-output", action="store_true", help=SHOW_OUTPUT_HELP)
-
     p_setup = sub.add_parser("setup", help="lay the project out, and install the wrapper for a version; run no step",
                              description="Lay the project out in the out dir and, with a version in play, install its wrapper. "
                                          "No step runs. Ends in 'result: set up' or 'result: error'.")
-    scenario_args(p_setup, tmp=True, install=True)
+    scenario_args(p_setup, lays_out=True)
     p_setup.add_argument("--show-output", action="store_true", help=SHOW_OUTPUT_HELP)
     p_run = sub.add_parser(
         "run", help="setup, then stop daemons, run the steps, stop daemons",
@@ -1755,20 +1693,13 @@ def build_parser() -> argparse.ArgumentParser:
                     "goes onto every run.gradle step's command, after the step's own arguments, so it wins on a "
                     "conflict. Shell steps get it as $GRADLE_ARGS. The daemon stops, the --version probe, and the "
                     "wrapper install do not get it.")
-    scenario_args(p_run, tmp=True, install=True)
-    step_args(p_run)
+    scenario_args(p_run, lays_out=True)
+    p_run.add_argument("--json", action="store_true", help="print the run summary as JSON on the last line")
+    p_run.add_argument("--tail", type=_tail_arg, default=30, metavar="N",
+                       help="how many log lines to show after a deviation or a failed wrapper install (default: 30)")
+    p_run.add_argument("--show-output", action="store_true", help=SHOW_OUTPUT_HELP)
     p_run.add_argument("--keep-daemons", action="store_true", help="do not stop Gradle daemons before or after the steps")
     p_run.usage = p_run.format_usage().removeprefix("usage: ").rstrip("\n") + " [-- GRADLE_ARGS ...]"
-    p_step = sub.add_parser(
-        "step", help="run only the listed steps against the set-up project, in the order given",
-        description="Run only the listed steps, numbered as in run's [i/N] lines, in the order given, against the "
-                    "project as it is. Nothing is set up, installed, or stopped around them; each step's step-NN.log "
-                    "is overwritten, and summary.json stays as the last full run left it. Needs <out>/project from "
-                    "'setup' or an earlier 'run'. Arguments after a literal -- go onto every run.gradle step, as for run.")
-    scenario_args(p_step, tmp=False, install=False)
-    p_step.add_argument("steps", nargs="+", type=int, metavar="N", help="step numbers, 1-based, run in this order")
-    step_args(p_step)
-    p_step.usage = p_step.format_usage().removeprefix("usage: ").rstrip("\n") + " [-- GRADLE_ARGS ...]"
     p_check = sub.add_parser(
         "check", help="validate the scenario and settle the Gradle binary; run nothing",
         description="Validate the scenario (keys, file flow, setup.gradle) and settle the Gradle binary as run would, "
@@ -1782,7 +1713,7 @@ def build_parser() -> argparse.ArgumentParser:
     scenario_args(sub.add_parser("stop-daemons", help="run '<gradle> --stop' in the set-up project",
                                  description="Run '<gradle> --stop' in the set-up project, stopping every daemon of that "
                                              "Gradle and user home. Needs <out>/project from 'setup' or an earlier 'run'."),
-                  tmp=False, install=False)
+                  lays_out=False)
     p_flat = sub.add_parser(
         "flat", help="print the scenario with setup.layout.base inlined",
         description="Print the scenario as TOML on stdout with setup.layout.base inlined: the layout file's files are "
@@ -1804,8 +1735,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return EXIT_OK
-    if gradle_args and args.command not in ("run", "step"):
-        print(f"error: arguments after -- are accepted by run and step only ({args.command} runs no Gradle step)", file=sys.stderr)
+    if gradle_args and args.command != "run":
+        print(f"error: arguments after -- are accepted by run only ({args.command} runs no Gradle step)", file=sys.stderr)
         return EXIT_ERROR
     if args.command == "help":
         if args.topic is None:
@@ -1828,17 +1759,17 @@ def main(argv: list[str] | None = None) -> int:
             text, source, kwargs = read_source(args)
             print(flatten(text, source, **kwargs), end="")
             return EXIT_OK
-        scenario, out_dir, ref = read_inputs(args)
+        scenario, out_dir = read_inputs(args)
         user_home = shared_home(args.gradle_user_home)
         if args.command == "check":
             return _cli_check(scenario, args.gradle, user_home, args.json)
         run = Run(scenario, out_dir, user_home, gradle=args.gradle, tail=getattr(args, "tail", 30),
                   show_output=getattr(args, "show_output", False), gradle_args=gradle_args)
         if args.command == "stop-daemons":
-            return _cli_stop_daemons(run, ref)
+            return _cli_stop_daemons(run, str(args.scenario))
         if args.command == "setup":
             return _cli_setup(run)
-        summary = run_steps(run, args.steps, ref) if args.command == "step" else run_scenario(run, not args.keep_daemons)
+        summary = run_scenario(run, not args.keep_daemons)
         if args.json:
             print(summary.to_json())
         return {"ok": EXIT_OK, "deviated": EXIT_DEVIATED}.get(summary.status, EXIT_ERROR)
@@ -1847,22 +1778,20 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_ERROR
 
 
-def read_inputs(args) -> tuple[Scenario, Path | None, str]:
-    """Load the scenario from its file or stdin, and settle the out dir (None for check).
-    Returns both, plus the scenario's reference for messages: the path as given, or '-'."""
+def read_inputs(args) -> tuple[Scenario, Path | None]:
+    """Load the scenario from its file or stdin, and settle the out dir (None for check)."""
     tmp, out = getattr(args, "tmp", False), getattr(args, "out", None)
     if tmp and out:
         raise GustError(f"--tmp and --out cannot be combined: with --tmp the out dir is {TMP_SHAPE}")
-    ref = str(args.scenario)
     text, source, kwargs = read_source(args)
     scenario = _load_named(text, source, **kwargs)
     stem = kwargs.get("default_name", scenario.name)
     if args.command == "check":
-        return scenario, None, ref
+        return scenario, None
     out_dir = tmp_out(stem) if tmp else out.resolve() if out else (Path.cwd() / (stem + ".out")).resolve()
-    if ref != "-":
+    if str(args.scenario) != "-":
         check_out_dir(out_dir, args.scenario)
-    return scenario, out_dir, ref
+    return scenario, out_dir
 
 
 def read_source(args) -> tuple[str, str, dict]:
@@ -1898,10 +1827,10 @@ def _cli_check(scenario: Scenario, gradle: str | None, user_home: Path, as_json:
         else:
             print(f"remote:   {remote.link} (not cached; fetched on run)")
     user_home.mkdir(parents=True, exist_ok=True)
-    _check_shell(scenario.steps)
-    choice = settle_gradle(scenario, gradle, root, user_home, needed=_needs_gradle(scenario.steps), may_install=True)
-    print_header(scenario, None, user_home, choice, sys.stdout, description=True)
+    _check_shell(scenario)
     counts = scenario.counts()
+    choice = settle_gradle(scenario, gradle, root, user_home, needed=counts["gradle"] > 0, may_install=True)
+    print_header(scenario, None, user_home, choice, sys.stdout, description=True)
     print(f"steps: {len(scenario.steps)} ({', '.join(f'{n} {kind}' for kind, n in counts.items())})")
     print("result: ok")
     if as_json:
@@ -1915,7 +1844,10 @@ def _cli_check(scenario: Scenario, gradle: str | None, user_home: Path, as_json:
 
 
 def _cli_stop_daemons(run: Run, ref: str) -> int:
-    check_set_up(run.out_dir, ref)
+    """Run '<gradle> --stop' in a set-up project: the marker and <out>/project. ref, the scenario as given, is for the hint."""
+    if not (run.out_dir / MARKER).is_file() or not run.project.is_dir():
+        hint = "pipe the same scenario to 'gust setup -'" if ref == "-" else f"run 'gust setup {ref}'"
+        raise GustError(f"no set-up project at {run.project}; {hint} first")
     run.choice = settle_gradle(run.scenario, run.gradle, run.project, run.user_home, needed=True, may_install=False)
     print_header(run.scenario, run.out_dir, run.user_home, run.choice, run.out)
     stopped = _stop_daemons(run, "[STOP]", "stop-daemons.log", full=True)["exit_code"] == 0
