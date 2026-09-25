@@ -1009,9 +1009,9 @@ def git_bash() -> str:
                     f"above {git}'s exec path {exec_path!r}")
 
 
-def _check_shell(steps) -> None:
-    """Find the bash for the shell steps among these, if any, before the out dir is touched."""
-    if WINDOWS and any(isinstance(s, RunStep) and s.kind == "shell" for s in steps):
+def _check_shell(scenario: Scenario) -> None:
+    """Find the bash for the scenario's shell steps, if it has any, before the out dir is touched."""
+    if WINDOWS and scenario.counts()["shell"]:
         git_bash()
 
 
@@ -1343,7 +1343,7 @@ def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
     when the output was shown.
     """
     steps = run.scenario.steps
-    _check_shell(steps)
+    _check_shell(run.scenario)
     summary = begin(run, needed=stop_daemons or run.scenario.counts()["gradle"] > 0)
     if summary.status != "error":                                        # a failed install: no step runs
         if stop_daemons:
@@ -1827,7 +1827,7 @@ def _cli_check(scenario: Scenario, gradle: str | None, user_home: Path, as_json:
         else:
             print(f"remote:   {remote.link} (not cached; fetched on run)")
     user_home.mkdir(parents=True, exist_ok=True)
-    _check_shell(scenario.steps)
+    _check_shell(scenario)
     counts = scenario.counts()
     choice = settle_gradle(scenario, gradle, root, user_home, needed=counts["gradle"] > 0, may_install=True)
     print_header(scenario, None, user_home, choice, sys.stdout, description=True)
