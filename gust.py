@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Gust, the Gradle User Scenario Tool: set up and run Gradle user scenarios.
 
-A scenario is one TOML file: the files of a Gradle project and an ordered list
-of steps. The files are laid out in an out dir and the steps run there in
-order, until the first step whose outcome differs from what the scenario
-expects. Gradle output goes to log files.
+A scenario is one TOML file: the files of a Gradle project, or the path of one
+to use in place, and an ordered list of steps. The files are laid out in an
+out dir and the steps run there in order, until the first step whose outcome
+differs from what the scenario expects. Gradle output goes to log files.
 
 Standard library only. Python 3.11+ (tomllib).
 """
@@ -65,7 +65,7 @@ RUNNABLE_SUFFIXES = (".exe", ".bat", ".cmd", ".com")      # on Windows, the exte
 # --- the scenario file's vocabulary
 TOP_KEYS = {"name", "description", "setup", "steps"}
 DEFAULT_NAME = "scenario"        # for a nameless scenario on stdin
-SETUP_KEYS = {"gradle", "layout"}
+SETUP_KEYS = {"gradle", "layout", "project"}
 LAYOUT_KEYS = {"base", "remote", "project"}
 STEP_KEYS = {"name", "run", "write", "edit"}
 RUN_KINDS = ("gradle", "shell")
@@ -136,10 +136,12 @@ setup                               what `gust setup` produces, and the first pa
                                     remote checkout (the project table cannot hold its jar); or a
                                     version such as "9.7.1", whose wrapper is installed into the
                                     project first (see Gradle version; the layout needs a settings
-                                    file). Default: the project's own ./gradlew when the checkout
-                                    (or, once set up, the project) has an executable one, else
-                                    gradle from PATH.
+                                    file). Default: the project's own ./gradlew when the checkout,
+                                    the project dir in place, or, once set up, the project has an
+                                    executable one, else gradle from PATH.
   layout        table    optional   the project's files; see setup.layout
+  project       string   optional   an existing project dir, used in place instead of a layout;
+                                    see In place. Relative to the scenario file or absolute
 
 setup.layout                        base or remote (not both), plus the project table
   base          string   optional   path to a layout file (a template project), relative to the
@@ -190,8 +192,8 @@ steps[].run.*.expect                what must hold after the step; every listed 
   no_output     array    optional   strings that must not appear in it
 
 steps[].edit[]
-  file          string   required   a file from the project table, the remote checkout, or an
-                                    earlier write step
+  file          string   required   a file from the project table, the remote checkout, the
+                                    project dir in place, or an earlier write step
   replace       string   required   non-empty; must occur exactly once in the file when the step runs
   with          string   required   the replacement text
 
@@ -205,11 +207,12 @@ Example
 Out dir
 =======
 
-Everything a run touches is in one directory, the out dir. By default it is in
-the working directory, named after the scenario file's stem (testing-loop.toml
--> ./testing-loop.out/), or after the scenario's name for stdin:
+Everything a run touches is in one directory, the out dir, apart from a project
+used in place (see In place). By default it is in the working directory, named
+after the scenario file's stem (testing-loop.toml -> ./testing-loop.out/), or
+after the scenario's name for stdin:
 
-  <out>/project/         the laid-out project, where run steps execute
+  <out>/project/         the laid-out project, where run steps execute; not there in place
   <out>/install-wrapper.log
                          output of the wrapper install, when a Gradle version is in play
   <out>/step-NN.log      output of run step NN
@@ -236,6 +239,29 @@ With --tmp (run and setup) the out dir is
 in local time at invocation, with <stem> as above; the same rules apply to it.
 To stop the daemons of such a run, pass --out <the printed path>.
 --tmp and --out cannot be combined.
+
+In place
+========
+
+With setup.project = "<dir>", or --project DIR on the command line (which takes
+precedence), the steps run in that existing directory as it is. Nothing is laid
+out, copied, or removed there, and the changes of every step land in the real
+directory. A relative setup.project resolves against the scenario file's
+directory (the working directory for stdin), a relative --project against the
+working directory. The directory must exist, and setup.layout cannot be
+combined with it.
+
+The out dir holds the logs, the traces, and summary.json as before, but no
+project/, and its rules above apply to it alone; it may not contain the project
+dir. The header has a `project:  <dir> (in place)` line, and the summary's
+project is that directory. Edit targets are checked against the directory's
+files. The default Gradle is the directory's own ./gradlew when it is
+executable, else gradle from PATH. No wrapper is installed into it, so a Gradle
+version (setup.gradle or --gradle) is refused; pass a binary instead.
+
+setup is refused, with nothing to lay out. For check and stop-daemons the
+directory is the project, and stop-daemons needs no earlier run: the out dir is
+made for its log when missing. In flat output, setup.project stays as written.
 
 The .gust directory
 ===================
@@ -275,7 +301,7 @@ Commands
   help [COMMAND]                  print usage, or a command's usage
   version                         print gust's version, the Python it runs on, and the script's path
   spec                            print this text
-  check SCENARIO [--gradle BIN|VERSION] [--gradle-user-home DIR] [--json]
+  check SCENARIO [--gradle BIN|VERSION] [--gradle-user-home DIR] [--project DIR] [--json]
                                   validate the scenario and settle the Gradle binary as run would,
                                   with nothing set up, installed, or fetched (an uncached remote is
                                   noted). The only thing written is what the --version probe leaves
@@ -284,16 +310,19 @@ Commands
                                   and result: ok, or the error. Worth running before a long run.
                                   The --json summary is {scenario, description, gradle,
                                   gradle_version, steps (a count), step_counts, remote {link,
-                                  cached} when there is one, status}.
-  setup SCENARIO [--out DIR | --tmp] [--gradle BIN|VERSION] [--gradle-user-home DIR] [--show-output]
+                                  cached} when there is one, project when in place, status}.
+  setup SCENARIO [--out DIR | --tmp] [--gradle BIN|VERSION] [--gradle-user-home DIR] [--project DIR]
+                 [--show-output]
                                   lay the project out and, with a version in play, install its
                                   wrapper; no step runs. Ends in `result: set up` (or
                                   `result: error` after a failed install) and the out: line.
-  run SCENARIO [--out DIR | --tmp] [--gradle BIN|VERSION] [--gradle-user-home DIR] [--json] [--tail N]
-               [--show-output] [--keep-daemons] [--trace] [-- GRADLE_ARGS ...]
+                                  Refused in place.
+  run SCENARIO [--out DIR | --tmp] [--gradle BIN|VERSION] [--gradle-user-home DIR] [--project DIR]
+               [--json] [--tail N] [--show-output] [--keep-daemons] [--trace] [-- GRADLE_ARGS ...]
                                   setup, then stop daemons, run the steps, stop daemons
-  stop-daemons SCENARIO [--out DIR] [--gradle BIN] [--gradle-user-home DIR]
-                                  run '<gradle> --stop' in <out>/project
+  stop-daemons SCENARIO [--out DIR] [--gradle BIN] [--gradle-user-home DIR] [--project DIR]
+                                  run '<gradle> --stop' in <out>/project, or in the project dir
+                                  in place
   flat SCENARIO                   print the scenario as TOML with setup.layout.base inlined: base is
                                   dropped and the layout file's files are merged into
                                   [setup.layout.project] as for setup, so no layout file is needed.
@@ -302,26 +331,29 @@ Commands
                                   goes to stdout.
 
 --out DIR names the out dir; with --tmp it is under /tmp (see Out dir).
+--project DIR uses an existing project dir in place (see In place).
 
 --gradle takes a binary or a version, read in this order:
   1. A value with a "/" is a path to a binary. ./gradlew (or any ./path) is
-     relative to the project dir and must be in the project table or the
-     remote checkout. Anything else is a filesystem path, such as
-     <distribution>/bin/gradle, and must be an executable file (a leading ~ is
-     expanded).
+     relative to the project dir and must be in the project table, the
+     remote checkout, or the project dir in place. Anything else is a
+     filesystem path, such as <distribution>/bin/gradle, and must be an
+     executable file (a leading ~ is expanded).
   2. A value without a "/" that names an executable on PATH or in the working
      directory (gradle, grl) is a binary.
   3. Anything else must be a Gradle version (9.7.1, 9.8.0-rc-2). Its wrapper
      is installed first, with gradle from PATH (see Gradle version), which
      needs a settings file in the layout. Nothing is installed by
-     stop-daemons, so there --gradle takes a binary only (BIN).
+     stop-daemons, so there --gradle takes a binary only (BIN), and nothing
+     into a project in place.
 A value that fits none of these is refused before the out dir is touched, with
 the value and what was tried in the message.
 
 Without --gradle, the order is: setup.gradle (wrapper or version), then the
-project's own ./gradlew when the checkout or the set-up project has an
-executable one, then gradle from PATH. Nothing is persisted; the choice is
-made again on every command. Shell steps get the binary as $GRADLE.
+project's own ./gradlew when the checkout, the project dir in place, or the
+set-up project has an executable one, then gradle from PATH. Nothing is
+persisted; the choice is made again on every command. Shell steps get the
+binary as $GRADLE.
 
 The gradle: header line is `<binary> <version> (<note>)`. For a binary,
 ./gradlew included, the version comes from `<binary> --version`, run up front.
@@ -339,10 +371,10 @@ binary is neither checked nor probed and the line has no version.
 Console
 =======
 
-Once the preconditions pass, a header is printed: scenario:, out:, home:,
-gradle:. With a remote, the remote: and checkout: lines come first, while the
-checkout is fetched or found in the cache. Then come blocks, each a label line
-and an outcome line:
+Once the preconditions pass, a header is printed: scenario:, out:, project:
+(in place only), home:, gradle:. With a remote, the remote: and checkout: lines
+come first, while the checkout is fetched or found in the cache. Then come
+blocks, each a label line and an outcome line:
 
   [WRP] Install Gradle wrapper 9.7.1     a `$ <command>` line, the wrapper task's output with
                                          --show-output, then `ok: exit 0 in 3.1s -> install-wrapper.log`.
@@ -422,7 +454,8 @@ The steps and both daemon stops then use ./gradlew. The output is in
 <out>/install-wrapper.log. The wrapper task only works inside a Gradle build,
 so the layout (or the remote checkout) must hold a settings.gradle,
 settings.gradle.kts, or settings.gradle.dcl; without one the run is refused
-before the out dir is touched.
+before the out dir is touched. A project in place gets no wrapper installed, so
+a version is refused there (see In place).
 
 A distributionSha256Sum pinned in the project survives the wrapper task, so the
 new version's distribution is rejected on the wrapper's first run: the daemon
@@ -454,7 +487,9 @@ scenario file works on every system; any other bash on PATH, such as WSL's, is
 not used. $GRADLE is the full path of the binary there, with forward slashes,
 unless it is ./gradlew.bat. The files of a remote checkout come with the line
 ends of this machine's git settings, so on Windows they may be CRLF. The --tmp
-root is the temp dir in place of /tmp.
+root is the temp dir instead of /tmp. A Windows path in setup.project takes
+forward slashes, or backslashes in a literal string ('C:\\work\\app'), since a
+backslash starts an escape in a basic string.
 
 Preconditions
 =============
@@ -466,15 +501,19 @@ scenario's path (or stdin).
   - Python 3.11 or newer.
   - The scenario parses and every key is known; `name`, if given, is a slug
     ([A-Za-z0-9][A-Za-z0-9._-]*); every `edit` file is in the project table,
-    the remote checkout, or an earlier write step; no path in the project table
-    or a write step is both a file and the parent directory of another.
+    the remote checkout, the project dir in place, or an earlier write step; no
+    path in the project table or a write step is both a file and the parent
+    directory of another.
   - The scenario file exists (any name; the out dir is named after its stem),
-    and the out dir does not contain it.
+    and the out dir does not contain it, nor the project dir in place.
+  - With setup.project or --project: the directory exists, there is no
+    setup.layout, and no Gradle version is in play.
   - --gradle, if given, is a binary or a version as described under Commands;
     without it, the default Gradle is checked the same way when a Gradle step
     or a daemon stop needs it.
   - For stop-daemons: <out> holds a set-up project (the marker and
-    <out>/project), and --gradle, if given, is a binary.
+    <out>/project) unless the project is in place, and --gradle, if given, is
+    a binary.
   - With setup.layout.remote: git is on PATH and the link has a supported form.
     The checkout is fetched (or its HEAD compared) before the out dir is
     touched, and edit targets are checked against it.
@@ -604,6 +643,7 @@ class Scenario:
     steps: list[Step]
     remote: Remote | None = None
     gradle: str | None = None           # "wrapper" (the project's own ./gradlew), a version such as "9.7.1", or None
+    project: Path | None = None         # setup.project or --project, resolved: the dir used in place, with no layout
 
     def counts(self) -> dict[str, int]:
         """The number of steps of each kind: gradle, shell, write, edit."""
@@ -614,12 +654,14 @@ class Scenario:
 # --------------------------------------------------------------------------- loading
 
 
-def load_scenario(text: str, base_dir: Path | None = None, default_name: str | None = None) -> Scenario:
+def load_scenario(text: str, base_dir: Path | None = None, default_name: str | None = None,
+                  project: Path | None = None) -> Scenario:
     """Parse a scenario.
 
-    A relative setup.layout.base is resolved against base_dir, the scenario file's directory.
-    default_name (the file's stem, used as is) is the name when the scenario has none; without
-    either, the name is "scenario".
+    A relative setup.layout.base or setup.project is resolved against base_dir, the scenario file's
+    directory. default_name (the file's stem, used as is) is the name when the scenario has none;
+    without either, the name is "scenario". project, from --project, takes precedence over
+    setup.project.
     """
     try:
         data = tomllib.loads(text)
@@ -640,6 +682,7 @@ def load_scenario(text: str, base_dir: Path | None = None, default_name: str | N
     if gradle is not None and gradle != "wrapper" and not VERSION_RE.fullmatch(gradle):
         raise GustError(f"setup.gradle: must be 'wrapper' or a Gradle version such as '9.7.1', got {gradle!r}")
     files, remote = _load_layout(setup.get("layout", {}), base_dir)
+    project = _load_project(_optional(setup, "project", str, "setup"), base_dir, project, "layout" in setup)
 
     steps_raw = data.get("steps", [])
     if not isinstance(steps_raw, list):
@@ -647,19 +690,21 @@ def load_scenario(text: str, base_dir: Path | None = None, default_name: str | N
     steps = [_load_step(s, i + 1) for i, s in enumerate(steps_raw)]
     if not steps:
         raise GustError("scenario has no steps")
-    scenario = Scenario(name=name, description=description, files=files, steps=steps, remote=remote, gradle=gradle)
+    scenario = Scenario(name=name, description=description, files=files, steps=steps, remote=remote, gradle=gradle,
+                        project=project)
     if remote is None:
-        check_file_flow(scenario, lambda rel: False)
+        check_file_flow(scenario, lambda rel: project is not None and (project / rel).is_file())
     return scenario
 
 
 def check_file_flow(scenario: Scenario, exists) -> None:
     """Check that every edit's file exists by then, and that no path is both a file and a directory.
 
-    exists(rel) is whether the remote checkout, if any, has that file.
+    exists(rel) is whether the remote checkout or the project dir in place, if any, has that file.
     """
     files: dict[str, str] = {}   # path -> where it first appears
     dirs: dict[str, str] = {}    # ancestor dir -> a file under it
+    on_disk = "setup.layout.remote" if scenario.project is None else str(scenario.project)
 
     def add(path: str, where: str) -> None:
         if path in dirs:
@@ -668,7 +713,7 @@ def check_file_flow(scenario: Scenario, exists) -> None:
         for k in range(1, len(parts)):
             ancestor = "/".join(parts[:k])
             if ancestor in files or exists(ancestor):
-                origin = files.get(ancestor, "setup.layout.remote")
+                origin = files.get(ancestor, on_disk)
                 raise GustError(f"{where}: {path!r} conflicts with {ancestor!r} ({origin}); one is a directory of the other")
             dirs.setdefault(ancestor, path)
         files[path] = where
@@ -682,8 +727,8 @@ def check_file_flow(scenario: Scenario, exists) -> None:
         elif isinstance(step, EditStep):
             for j, edit in enumerate(step.edits, start=1):
                 if edit.file not in files and not exists(edit.file):
-                    raise GustError(
-                        f"steps[{i}].edit[{j}].file: {edit.file!r} is not in the layout and no earlier step writes it")
+                    raise GustError(f"steps[{i}].edit[{j}].file: {edit.file!r} is not in "
+                                    f"{'the layout' if scenario.project is None else scenario.project} and no earlier step writes it")
 
 
 def _load_layout(raw: object, base_dir: Path | None) -> tuple[dict[str, str], Remote | None]:
@@ -701,6 +746,24 @@ def _load_layout(raw: object, base_dir: Path | None) -> tuple[dict[str, str], Re
     if "project" in raw:
         files.update(_load_files(raw["project"], "setup.layout.project"))   # the scenario's own files win
     return files, remote
+
+
+def _load_project(value: str | None, base_dir: Path | None, cli: Path | None, has_layout: bool) -> Path | None:
+    """The project dir used in place: --project (cli), else setup.project (value) resolved against base_dir.
+    It must be an existing directory, and the scenario may have no setup.layout."""
+    if value is None and cli is None:
+        return None
+    where = "setup.project" if cli is None else "--project"
+    if has_layout:
+        raise GustError(f"{where} and setup.layout cannot be combined: in place, the project is used as it is")
+    path = Path(value) if cli is None else cli.absolute()      # --project: relative to the working directory
+    if not path.is_absolute():
+        if base_dir is None:
+            raise GustError(f"{where}: {value!r} is relative but the scenario has no directory to resolve it against")
+        path = base_dir / path
+    if not path.is_dir():
+        raise GustError(f"{where}: no such directory {path}")
+    return path.resolve()
 
 
 def _load_remote(link: str) -> Remote:
@@ -865,9 +928,11 @@ def tmp_out(stem: str, now: float | None = None) -> Path:
     return TMP_ROOT / time.strftime("gust-%y%m%d", t) / f"{stem}.{time.strftime('%H%M%S', t)}.out"
 
 
-def check_out_dir(out_dir: Path, scenario_path: Path) -> None:
-    if scenario_path.resolve().is_relative_to(out_dir):
-        raise GustError(f"out dir {out_dir} contains the scenario file {scenario_path}; it would be removed with the earlier run")
+def check_out_dir(out_dir: Path, scenario_path: Path | None, project: Path | None = None) -> None:
+    """Refuse an out dir that holds the scenario file or the project dir in place, which a rerun would remove."""
+    for what, path in (("scenario file", scenario_path), ("project dir", project)):
+        if path is not None and path.resolve().is_relative_to(out_dir):
+            raise GustError(f"out dir {out_dir} contains the {what} {path}; it would be removed with the earlier run")
 
 
 MARKER_TEXT = "Marker for gust: this directory was produced by gust and may be replaced or removed by a later run.\n"
@@ -1100,7 +1165,7 @@ def settle_gradle(scenario: Scenario, cli_value: str | None, root: Path | None, 
     is setup.gradle ("wrapper", or a version whose wrapper is installed first), then the project's
     own executable ./gradlew, then "gradle" from PATH.
     root holds the project's files so far: the remote checkout before setup, the project dir after
-    it, or None for an inline layout or an unfetched remote.
+    it or in place, or None for an inline layout or an unfetched remote.
     needed is whether a Gradle step or a daemon stop will run. When it is False and there is no
     --gradle and no version to install, the default is neither checked nor probed.
     may_install is False once the project is set up (stop-daemons). A version from --gradle is
@@ -1124,6 +1189,8 @@ def settle_gradle(scenario: Scenario, cli_value: str | None, root: Path | None, 
         source = "cli"
         binary, install = _settle_binary(cli_value, exists)
         label = f"--gradle {cli_value!r}"
+    if install is not None and scenario.project is not None:
+        raise GustError(f"{label} is a version, but no wrapper is installed into a project in place; pass a binary")
     if install is not None and not may_install:
         if source == "cli":
             raise GustError(f"--gradle {cli_value!r} is a version, but nothing is installed here; pass a binary (a name or a path)")
@@ -1191,8 +1258,10 @@ def _executable(path: Path) -> bool:
 
 def lay_out(scenario: Scenario, out_dir: Path) -> Path:
     """Prepare the out dir and write the project into it: the remote tree, if any, then the project table.
-    Returns the project dir."""
+    Returns the project dir: <out>/project, or the project dir in place, untouched."""
     prepare_out(out_dir)
+    if scenario.project is not None:
+        return scenario.project
     project = out_dir / "project"
     if scenario.remote is not None:
         shutil.copytree(scenario.remote.source, project, ignore=shutil.ignore_patterns(".git"), symlinks=True)
@@ -1290,7 +1359,8 @@ class Run:
 
     @property
     def project(self) -> Path:
-        return self.out_dir / "project"
+        """Where the steps run: the project dir in place, else <out>/project."""
+        return self.scenario.project or self.out_dir / "project"
 
     @property
     def env(self) -> dict:
@@ -1312,7 +1382,7 @@ def _for_bash(binary: str) -> str:
 
 def print_header(scenario: Scenario, out_dir: Path | None, user_home: Path, choice: GradleChoice, out,
                  description: bool = False) -> None:
-    """The header printed once the preconditions pass: scenario, out, home, gradle.
+    """The header printed once the preconditions pass: scenario, out, project (in place only), home, gradle.
 
     The description, under scenario:, is only for check, which also passes no out_dir.
     """
@@ -1321,6 +1391,8 @@ def print_header(scenario: Scenario, out_dir: Path | None, user_home: Path, choi
         print(f"          {scenario.description}", file=out)
     if out_dir is not None:
         print(f"out:      {out_dir}", file=out)
+    if scenario.project is not None:
+        print(f"project:  {scenario.project} (in place)", file=out)
     print(f"home:     {user_home}", file=out)
     print(f"gradle:   {choice.header}", file=out)
 
@@ -1346,7 +1418,7 @@ def begin(run: Run, needed: bool) -> RunSummary:
         remote_info = fetch_remote(scenario, out)
         if not remote_info["fetched"]:
             print(f"checkout: {scenario.remote.dir} (cached)", file=out)
-    root = scenario.remote.source if scenario.remote else None
+    root = scenario.remote.source if scenario.remote else scenario.project
     run.choice = settle_gradle(scenario, run.gradle, root, run.user_home, needed=needed, may_install=True)
     lay_out(scenario, run.out_dir)
     print_header(scenario, run.out_dir, run.user_home, run.choice, out)
@@ -1566,7 +1638,7 @@ def flatten(text: str, source: str, base_dir: Path | None = None, default_name: 
         same = False
     if not same:
         raise GustError(f"{source}: the flattened TOML, once parsed, differs from the scenario (a bug in gust); nothing is printed")
-    _load_named(flat, source, default_name=default_name)
+    _load_named(flat, source, base_dir=base_dir, default_name=default_name)   # base_dir for a relative setup.project
     return flat
 
 
@@ -1682,6 +1754,8 @@ TMP_HELP = (f"put the out dir at {TMP_SHAPE}; "
 SHOW_OUTPUT_HELP = "also print each step's output as it runs; the log is written either way"
 SCENARIO_HELP = "the scenario file, or - to read it from stdin"
 HOME_HELP = "the Gradle user home for every Gradle invocation (default: .gust/shared-gradle-user-home)"
+PROJECT_HELP = ("an existing project dir to use in place, as it is: the steps run there, and their writes and edits land "
+                "in it; relative to the working directory; takes precedence over setup.project; not with setup.layout")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1699,7 +1773,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("spec", help="print the scenario file format")
 
     def scenario_args(p: argparse.ArgumentParser, lays_out: bool) -> None:
-        """SCENARIO, --out, --gradle, --gradle-user-home; --tmp and a --gradle version only where the project is laid out."""
+        """SCENARIO, --out, --gradle, --gradle-user-home, --project; --tmp and a --gradle version only where the project
+        is laid out."""
         p.add_argument("scenario", type=Path, help=SCENARIO_HELP)
         p.add_argument("--out", type=Path, metavar="DIR",
                        help="the out dir (default: <stem>.out in the working directory, or <name>.out for stdin)")
@@ -1709,6 +1784,7 @@ def build_parser() -> argparse.ArgumentParser:
         else:
             p.add_argument("--gradle", metavar="BIN", help=BINARY_HELP)
         p.add_argument("--gradle-user-home", type=Path, metavar="DIR", help=HOME_HELP)
+        p.add_argument("--project", type=Path, metavar="DIR", help=PROJECT_HELP)
 
     p_setup = sub.add_parser("setup", help="lay the project out, and install the wrapper for a version; run no step",
                              description="Lay the project out in the out dir and, with a version in play, install its wrapper. "
@@ -1717,7 +1793,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup.add_argument("--show-output", action="store_true", help=SHOW_OUTPUT_HELP)
     p_run = sub.add_parser(
         "run", help="setup, then stop daemons, run the steps, stop daemons",
-        description="Set up, then stop daemons, run the steps, and stop daemons again. Everything after a literal -- "
+        description="Set up, then stop daemons, run the steps, and stop daemons again. With --project or setup.project, "
+                    "nothing is laid out: the steps run in that directory, in place. Everything after a literal -- "
                     "goes onto every run.gradle step's command, after the step's own arguments, so it wins on a "
                     "conflict. Shell steps get it as $GRADLE_ARGS. The daemon stops, the --version probe, and the "
                     "wrapper install do not get it.")
@@ -1740,10 +1817,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_check.add_argument("scenario", type=Path, help=SCENARIO_HELP)
     p_check.add_argument("--gradle", metavar="BIN|VERSION", help=GRADLE_HELP)
     p_check.add_argument("--gradle-user-home", type=Path, metavar="DIR", help=HOME_HELP)
+    p_check.add_argument("--project", type=Path, metavar="DIR", help=PROJECT_HELP)
     p_check.add_argument("--json", action="store_true", help="print the summary as JSON on the last line")
     scenario_args(sub.add_parser("stop-daemons", help="run '<gradle> --stop' in the set-up project",
                                  description="Run '<gradle> --stop' in the set-up project, stopping every daemon of that "
-                                             "Gradle and user home. Needs <out>/project from 'setup' or an earlier 'run'."),
+                                             "Gradle and user home. Needs <out>/project from 'setup' or an earlier 'run', "
+                                             "or a project in place."),
                   lays_out=False)
     p_flat = sub.add_parser(
         "flat", help="print the scenario with setup.layout.base inlined",
@@ -1816,13 +1895,12 @@ def read_inputs(args) -> tuple[Scenario, Path | None]:
     if tmp and out:
         raise GustError(f"--tmp and --out cannot be combined: with --tmp the out dir is {TMP_SHAPE}")
     text, source, kwargs = read_source(args)
-    scenario = _load_named(text, source, **kwargs)
+    scenario = _load_named(text, source, project=args.project, **kwargs)
     stem = kwargs.get("default_name", scenario.name)
     if args.command == "check":
         return scenario, None
     out_dir = tmp_out(stem) if tmp else out.resolve() if out else (Path.cwd() / (stem + ".out")).resolve()
-    if str(args.scenario) != "-":
-        check_out_dir(out_dir, args.scenario)
+    check_out_dir(out_dir, None if str(args.scenario) == "-" else args.scenario, scenario.project)
     return scenario, out_dir
 
 
@@ -1849,7 +1927,7 @@ def _load_named(text: str, source: str, **kwargs) -> Scenario:
 
 def _cli_check(scenario: Scenario, gradle: str | None, user_home: Path, as_json: bool) -> int:
     """Validate the scenario and settle the Gradle binary as run would, without setting anything up."""
-    remote, root = scenario.remote, None
+    remote, root = scenario.remote, scenario.project
     if remote is not None:
         cached = (remote.dir / ".git").exists()
         if cached:
@@ -1870,17 +1948,23 @@ def _cli_check(scenario: Scenario, gradle: str | None, user_home: Path, as_json:
                    "gradle_version": choice.version, "steps": len(scenario.steps), "step_counts": counts}
         if remote is not None:
             summary["remote"] = {"link": remote.link, "cached": cached}
+        if scenario.project is not None:
+            summary["project"] = str(scenario.project)
         summary["status"] = "ok"
         print(json.dumps(summary))
     return EXIT_OK
 
 
 def _cli_stop_daemons(run: Run, ref: str) -> int:
-    """Run '<gradle> --stop' in a set-up project: the marker and <out>/project. ref, the scenario as given, is for the hint."""
-    if not (run.out_dir / MARKER).is_file() or not run.project.is_dir():
+    """Run '<gradle> --stop' in a set-up project (the marker and <out>/project) or in the project dir in place. ref, the
+    scenario as given, is for the hint."""
+    in_place = run.scenario.project is not None
+    if not in_place and (not (run.out_dir / MARKER).is_file() or not run.project.is_dir()):
         hint = "pipe the same scenario to 'gust setup -'" if ref == "-" else f"run 'gust setup {ref}'"
         raise GustError(f"no set-up project at {run.project}; {hint} first")
     run.choice = settle_gradle(run.scenario, run.gradle, run.project, run.user_home, needed=True, may_install=False)
+    if in_place and not (run.out_dir / MARKER).is_file():
+        prepare_out(run.out_dir)                       # an out dir for the log; without the marker there is nothing to remove
     print_header(run.scenario, run.out_dir, run.user_home, run.choice, run.out)
     stopped = _stop_daemons(run, "[STOP]", "stop-daemons.log", full=True)["exit_code"] == 0
     print(f"result: {'ok' if stopped else 'error'}", file=run.out)
@@ -1889,6 +1973,8 @@ def _cli_stop_daemons(run: Run, ref: str) -> int:
 
 
 def _cli_setup(run: Run) -> int:
+    if run.scenario.project is not None:
+        raise GustError(f"nothing to lay out: the project {run.scenario.project} is used in place, as it is")
     ok = begin(run, needed=False).status != "error"
     print("result: set up" if ok else "result: error", file=run.out)
     print_out(run)

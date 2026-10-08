@@ -96,8 +96,16 @@ runs, so you can look around in it or run Gradle there by hand.
 | `setup.layout.project` | the project's files, inline |
 | `setup.layout.base` | the project's files from a layout file |
 | `setup.layout.remote` | the project's files from a git commit, pinned to a hash, optionally a subdirectory |
+| `setup.project` | an existing project dir, used in place instead of a layout |
 
 Every key is in `gust spec`.
+
+With `setup.project = "<dir>"`, or `gust run loop.toml --project <dir>`, the
+steps run in that directory as it is, with no copy, so their writes and edits
+land in your real files. The console header has a `project: <dir> (in place)`
+line. The logs and `summary.json` still go to the out dir, and on a rerun only
+the out dir is cleared. `setup.layout` cannot be combined with it, and no
+wrapper is installed there, so `--gradle` takes a binary, not a version.
 
 A scenario built on a layout file becomes one self-contained file with
 `gust flat loop.toml > loop.flat.toml`: the layout file's files are merged into
@@ -114,8 +122,8 @@ The Gradle the steps run with is the first of:
    layout needs a settings file.
 3. The scenario's `setup.gradle`: `"wrapper"` for the project's own wrapper,
    which must exist, or a version.
-4. The project's own `./gradlew` (`gradlew.bat` on Windows), when the checkout
-   or the set-up project has one.
+4. The project's own `./gradlew` (`gradlew.bat` on Windows), when the checkout,
+   the project dir in place, or the set-up project has one.
 5. `gradle` from PATH.
 
 About that choice:
@@ -142,7 +150,7 @@ Everything goes into the out dir:
 
 It holds:
 
-- `project/`
+- `project/`, unless the project is in place
 - one log per run step
 - with `run --trace`, Gradle's build operation trace for each Gradle step, as
   `step-NN-ops-log.txt`

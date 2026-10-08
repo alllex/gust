@@ -44,6 +44,17 @@ def main():
     print(f"traces of step 1: {traces}")
     if not traces or not all(traces.values()):
         sys.exit("--trace: step-01-ops* must exist in the out dir and be non-empty")
+    # in place: the quick start's files in a dir of their own, its steps run there with no copy
+    project = WORK / "in place project"
+    for rel, content in gust.load_scenario(gust.EXAMPLE).files.items():
+        (project / rel).parent.mkdir(parents=True, exist_ok=True)
+        (project / rel).write_text(content, encoding="utf-8")
+    steps = gust.EXAMPLE.split("[setup.layout.project]")[0]
+    (WORK / "in-place.toml").write_text(f'setup.project = "{project.name}"\n' + steps, encoding="utf-8")
+    gust_cli(0, "run", "in-place.toml")
+    test = (project / "src/test/java/demo/GreeterTest.java").read_text(encoding="utf-8")
+    if 'assertEquals("Hello, World!"' not in test or not (project / "build").is_dir() or (WORK / "in-place.out" / "project").exists():
+        sys.exit("in-place.toml: the edit and the build must land in the project dir, and the out dir must have no project/")
     gust_cli(0, "run", "wrapper.toml", "--gradle", "9.7.1")                # the wrapper install and gradlew.bat
     gust_cli(0, "run", "shell.toml")
     # a daemon left running, then a setup over its project
