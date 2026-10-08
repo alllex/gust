@@ -650,7 +650,7 @@ class LayoutRemoteTest(GustCase):
         scenario = self.load(f'setup.gradle = "wrapper"\nsetup.layout.remote = "{self.url}#{self.sha}/sub"', '[[steps]]\nrun.gradle = "help"\n')
         with self.assertRaises(gs.GustError) as cm:
             self.run_scenario(scenario, self.tmp / "s.out", stop_daemons=False)
-        self.assertIn(f'setup.gradle = "wrapper" but {WRAPPER_FILE} is not in the layout or the remote checkout', str(cm.exception))
+        self.assertIn(f'setup.gradle = "wrapper" but {WRAPPER_FILE} is not among the project\'s files', str(cm.exception))
         self.assertFalse((self.tmp / "s.out").exists())
         inline = gs.load_scenario(f'name = "i"\nsetup.gradle = "wrapper"\n[setup.layout.project]\n"{WRAPPER_FILE}" = "not run"\n[[steps]]\nrun.gradle = "help"')
         with self.assertRaises(gs.GustError) as cm:
@@ -720,9 +720,9 @@ class LayoutRemoteTest(GustCase):
         # 1. a "/" is a binary given as a path, never a version
         refused("foo/bar", f"--gradle 'foo/bar': no executable at {self.tmp / 'foo' / 'bar'}")
         refused("/no/such/gradle", f"--gradle '/no/such/gradle': no executable at {Path('/no/such/gradle').resolve()}")   # on Windows, with the drive
-        refused("./nope/gradle", "--gradle './nope/gradle' is relative to the project dir but no such file is in setup.layout.project or the remote checkout")
+        refused("./nope/gradle", "--gradle './nope/gradle' is relative to the project dir but no such file is in the project")
         (self.tmp / "plain").write_text("not executable")
-        refused("./plain", "--gradle './plain' is relative to the project dir but no such file is in setup.layout.project or the remote checkout")
+        refused("./plain", "--gradle './plain' is relative to the project dir but no such file is in the project")
         refused(str(self.tmp / "plain"), f"--gradle {str(self.tmp / 'plain')!r}: no executable at {self.tmp / 'plain'}")
         gradle = runnable("gradle")
         summary = self.run_scenario(scenario, self.tmp / "a.out", gradle=f"bin/{gradle}", stop_daemons=False)
@@ -797,7 +797,7 @@ class LayoutRemoteTest(GustCase):
             errors.append(err.strip())
         self.assertEqual(errors, [
             "error: --gradle 'nope': not found on PATH and not a Gradle version such as 9.7.1",
-            "error: --gradle './nope/gradle' is relative to the project dir but no such file is in setup.layout.project or the remote checkout",
+            "error: --gradle './nope/gradle' is relative to the project dir but no such file is in the project",
             "error: --gradle '9.7.1' is a version, but nothing is installed here; pass a binary (a name or a path)"])   # the first run set the project up
         code, out, _ = self.cli("setup", str(s), "--gradle", "9.7.0")
         self.assertEqual(code, gs.EXIT_OK)
@@ -839,7 +839,7 @@ class LayoutRemoteTest(GustCase):
         self.assertEqual(err.strip(), f"error: {WRAPPER}: not a Gradle binary (no 'Gradle <version>' line in the output of --version)")
         gradlew.unlink()                                                                     # and a missing one is named
         code, _, err = self.cli("stop-daemons", str(s))
-        self.assertEqual((code, err.strip()), (gs.EXIT_ERROR, f'error: setup.gradle = "wrapper" but {WRAPPER_FILE} is not in the layout or the remote checkout'))
+        self.assertEqual((code, err.strip()), (gs.EXIT_ERROR, f'error: setup.gradle = "wrapper" but {WRAPPER_FILE} is not among the project\'s files'))
 
     def test_version_needs_a_gradle_build(self):
         self.fake_gradle_on_path()
@@ -1352,7 +1352,7 @@ with = "b"
         self.assertIn(f"no executable at {Path('/no/such/gradle').resolve()}", str(cm.exception))
         with self.assertRaises(gs.GustError) as cm:
             self.run_text(needs_gradle, gradle=WRAPPER)
-        self.assertIn("no such file is in setup.layout.project", str(cm.exception))
+        self.assertIn("no such file is in the project", str(cm.exception))
         with self.assertRaises(gs.GustError) as cm:
             self.run_text(needs_gradle, gradle="../gradlew")
         self.assertIn("no executable at", str(cm.exception))
@@ -1804,6 +1804,192 @@ class CliTest(GustCase):
         self.assertEqual((out_dir / "step-01.log").read_text().strip(), f"{home_arg()} help")
         self.assertEqual(sorted(p.name for p in out_dir.glob("*ops*")), [])
         self.assertNotIn("trace", json.loads(out.rstrip("\n").splitlines()[-1])["steps"][0])
+
+
+class InPlaceTest(GustCase):
+    """setup.project and --project: the steps run in an existing directory, with nothing laid out."""
+
+    STEPS = '[[steps]]\nrun.shell = "true"\n'
+
+    def setUp(self):
+        super().setUp()
+        self.proj = self.tmp / "my proj"
+        self.proj.mkdir()
+        (self.proj / "settings.gradle.kts").write_text("")
+        (self.proj / "a.txt").write_text("hello\n")
+
+    def files(self):
+        return sorted(p.relative_to(self.proj).as_posix() for p in self.proj.rglob("*"))
+
+    def assert_rejects(self, text, message, **kw):
+        with self.assertRaises(gs.GustError) as cm:
+            gs.load_scenario(text, **kw)
+        self.assertEqual(str(cm.exception), message)
+
+    def test_key_and_flag(self):
+        S = self.STEPS
+        self.assertEqual(gs.load_scenario('setup.project = "my proj"\n' + S, base_dir=self.tmp).project, self.proj)
+        self.assertEqual(gs.load_scenario(f'setup.project = "{self.proj.as_posix()}"\n' + S).project, self.proj)   # absolute
+        self.assertIsNone(gs.load_scenario(S).project)
+        other = self.tmp / "other"
+        other.mkdir()
+        # --project takes precedence, even over a missing dir, and a relative one resolves against the working directory
+        self.assertEqual(gs.load_scenario('setup.project = "nope"\n' + S, base_dir=self.tmp, project=other).project, other)
+        self.assertEqual(gs.load_scenario(S, base_dir=other, project=Path("my proj")).project, self.proj)
+        self.assert_rejects('setup.project = "nope"\n' + S, f"setup.project: no such directory {self.tmp / 'nope'}", base_dir=self.tmp)
+        self.assert_rejects('setup.project = "a.txt"\n' + S, f"setup.project: no such directory {self.proj / 'a.txt'}", base_dir=self.proj)
+        self.assert_rejects('setup.project = "my proj"\n' + S, "setup.project: 'my proj' is relative but the scenario has no directory to resolve it against")
+        self.assert_rejects('setup.project = 1\n' + S, "setup.project: must be str")
+        self.assert_rejects(S, f"--project: no such directory {self.tmp / 'nope'}", project=Path("nope"))
+        self.assert_rejects('setup.project = ""\n' + S, "setup.project: must not be empty", base_dir=self.tmp)   # "." says that
+        # a leading ~ is expanded in both, as for --gradle; the path is kept as given, normalized, a symlink included
+        os.environ["HOME"] = os.environ["USERPROFILE"] = str(self.tmp)                 # USERPROFILE on Windows
+        self.assertEqual(gs.load_scenario('setup.project = "~/my proj"\n' + S).project, self.proj)
+        self.assertEqual(gs.load_scenario(S, project=Path("~/my proj")).project, self.proj)
+        self.assertEqual(gs.load_scenario('setup.project = "other/../my proj"\n' + S, base_dir=self.tmp).project, self.proj)
+        if not gs.WINDOWS:                                                               # symlinks need privileges there
+            (self.tmp / "link").symlink_to(self.proj)
+            self.assertEqual(gs.load_scenario(S, project=self.tmp / "link").project, self.tmp / "link")
+        # in place means the directory as it is: no setup.layout key at all, empty table included
+        for layout in ('[setup.layout.project]\n"x" = "y"\n', 'setup.layout.remote = "https://github.com/o/r/commit/0123abcd"\n',
+                       '[setup.layout.project]\n'):
+            self.assert_rejects('setup.project = "my proj"\n' + layout + S,
+                                "setup.project and setup.layout cannot be combined: in place, the project is used as it is", base_dir=self.tmp)
+            self.assert_rejects(layout + S, "--project and setup.layout cannot be combined: in place, the project is used as it is",
+                                project=self.proj)
+
+    def test_edit_targets_are_checked_against_the_dir(self):
+        edit = '[[steps]]\nedit = [{ file = "FILE", replace = "hello", with = "bye" }]\n'
+        gs.load_scenario(edit.replace("FILE", "a.txt"), project=self.proj)
+        self.assert_rejects(edit.replace("FILE", "b.txt"), f"steps[1].edit[1].file: 'b.txt' is not in {self.proj} and no earlier step writes it",
+                            project=self.proj)
+        self.assert_rejects('[[steps]]\nwrite."a.txt/x" = ""\n', f"steps[1].write: 'a.txt/x' conflicts with 'a.txt' ({self.proj}); one is a directory of the other",
+                            project=self.proj)
+
+    def test_run_changes_the_real_dir(self):
+        s = self.scenario_file('setup.project = "my proj"\n[[steps]]\nwrite."b.txt" = "written"\n'
+                               '[[steps]]\nedit = [{ file = "a.txt", replace = "hello", with = "edited" }]\n'
+                               '[[steps]]\nrun.shell = "grep -q edited a.txt && test -f b.txt"\n')
+        out_dir = self.tmp / "s.out"
+        shutil.copytree(self.proj, self.tmp / "other")                              # for a second run, below
+        code, out, _ = self.cli("run", str(s), "--keep-daemons", "--json")
+        self.assertEqual(code, gs.EXIT_OK, out)
+        self.assertTrue(out.startswith(f"scenario: s\nout:      {out_dir}\nproject:  {self.proj} (in place)\n"
+                                       f"home:     {self.gust / gs.SHARED_HOME}\ngradle:   gradle (default)\n[1/3]"), out)
+        self.assertEqual(((self.proj / "a.txt").read_text(), (self.proj / "b.txt").read_text()), ("edited\n", "written"))
+        self.assertEqual(sorted(p.name for p in out_dir.iterdir()), [gs.MARKER, "step-03.log", "summary.json"])   # no project/
+        summary = json.loads(out.rstrip("\n").splitlines()[-1])
+        self.assertEqual((summary["project"], summary["out"]), (str(self.proj), str(out_dir)))
+        self.assertEqual(json.loads((out_dir / "summary.json").read_text()), summary)
+        # on a rerun only the out dir is recreated; --project takes precedence over setup.project
+        (out_dir / "junk").write_text("")
+        before = self.files()
+        code, out, _ = self.cli("run", str(s), "--keep-daemons", "--project", "other")
+        self.assertEqual(code, gs.EXIT_OK, out)
+        self.assertIn(f"project:  {self.tmp / 'other'} (in place)\n", out)
+        self.assertFalse((out_dir / "junk").exists())
+        self.assertEqual(self.files(), before)
+        self.assertEqual((self.tmp / "other" / "b.txt").read_text(), "written")
+        # from stdin, a relative setup.project resolves against the working directory; the same out dir again
+        code, out, _ = self.cli("run", "-", "--keep-daemons", "--out", str(out_dir),
+                                stdin='setup.project = "my proj"\n[[steps]]\nrun.shell = "test -f b.txt"\n')
+        self.assertEqual(code, gs.EXIT_OK, out)
+        self.assertIn(f"project:  {self.proj} (in place)\n", out)
+        self.assertEqual(self.files(), before)                                      # b.txt from the first run still there
+        # an out dir that holds the project dir is refused, as it would be removed on a rerun
+        code, out, err = self.cli("run", str(s), "--project", "my proj", "--out", str(self.proj))
+        self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
+        self.assertEqual(err.strip(), f"error: out dir {self.proj} contains the project dir {self.proj}; it would be removed with the earlier run")
+        self.assertEqual(self.files(), before)
+
+    def test_gradle_default_is_the_dirs_wrapper(self):
+        self.fake_gradle_on_path()
+        write_script(self.proj, "gradlew", FAKE_GRADLE)
+        scenario = gs.load_scenario('[[steps]]\nrun.gradle = { args = "help", expect = { output = ["gradlew help"] } }\n', project=self.proj)
+        summary = self.run_scenario(scenario, self.tmp / "s.out", stop_daemons=True)
+        self.assertEqual((summary.status, summary.gradle, summary.project), ("ok", WRAPPER, str(self.proj)))
+        self.assertIn(f"gradle:   {WRAPPER} 9.7.1 (default)\n", self.out.getvalue())
+        self.assertEqual((self.tmp / "s.out" / "stop-daemons-before.log").read_text().strip(), "gradlew --stop")
+        # a version is refused, before the out dir or the project is touched
+        before = self.files()
+        for gradle, text, label in ((None, 'setup.gradle = "9.7.1"\n', "setup.gradle '9.7.1'"), ("9.7.1", "", "--gradle '9.7.1'")):
+            with self.assertRaises(gs.GustError) as cm:
+                self.run_scenario(gs.load_scenario(text + self.STEPS, project=self.proj), self.tmp / "v.out", gradle=gradle)
+            self.assertEqual(str(cm.exception), f"{label} is a version, but no wrapper is installed into a project in place; pass a binary")
+        self.assertFalse((self.tmp / "v.out").exists())
+        self.assertEqual(self.files(), before)
+        # the wrapper by name: --gradle ./gradlew and setup.gradle = "wrapper"; stop-daemons takes it by default too
+        help_step = '[[steps]]\nrun.gradle = "help"\n'
+        self.out = io.StringIO()
+        self.assertEqual(self.run_scenario(scenario, self.tmp / "s.out", gradle=WRAPPER).gradle, WRAPPER)
+        self.assertEqual(self.run_scenario(gs.load_scenario('setup.gradle = "wrapper"\n' + help_step, project=self.proj),
+                                           self.tmp / "s.out").gradle, WRAPPER)
+        self.assertIn(f"gradle:   {WRAPPER} 9.7.1 (--gradle)\n", self.out.getvalue())
+        self.assertIn(f"gradle:   {WRAPPER} 9.7.1 (scenario)\n", self.out.getvalue())
+        code, out, _ = self.cli("stop-daemons", str(self.scenario_file(help_step)), "--project", "my proj")
+        self.assertEqual(code, gs.EXIT_OK, out)
+        self.assertIn(f"gradle:   {WRAPPER} 9.7.1 (default)\n[STOP] Stop Gradle daemons\n$ {WRAPPER} --stop\n", out)
+        # without the wrapper: gradle from PATH, and naming the wrapper is refused
+        for name in ("gradlew.py", runnable("gradlew")):
+            (self.proj / name).unlink()
+        self.out = io.StringIO()
+        summary = self.run_scenario(gs.load_scenario(help_step, project=self.proj), self.tmp / "s.out")
+        self.assertEqual(summary.gradle, "gradle")
+        self.assertIn("gradle:   gradle 9.7.1 (default)\n", self.out.getvalue())
+        for text, gradle, message in (('setup.gradle = "wrapper"\n', None, f'setup.gradle = "wrapper" but {WRAPPER_FILE} is not among the project\'s files'),
+                                      ("", WRAPPER, f"--gradle {WRAPPER!r} is relative to the project dir but no such file is in the project")):
+            with self.assertRaises(gs.GustError) as cm:
+                self.run_scenario(gs.load_scenario(text + help_step, project=self.proj), self.tmp / "s.out", gradle=gradle)
+            self.assertEqual(str(cm.exception), message)
+
+    def test_out_dir_inside_the_project(self):
+        s = self.scenario_file('setup.project = "my proj"\n' + self.STEPS)
+        before = self.files()
+        for _ in range(2):                                                               # on the second run, the first one's out dir is cleared
+            code, out, _ = self.cli("run", str(s), "--keep-daemons", "--out", str(self.proj / "s.out"))
+            self.assertEqual(code, gs.EXIT_OK, out)
+        self.assertEqual(self.files(), sorted(before + ["s.out", f"s.out/{gs.MARKER}", "s.out/step-01.log", "s.out/summary.json"]))
+        self.assertEqual((self.proj / "a.txt").read_text(), "hello\n")
+
+    def test_check_setup_and_stop_daemons(self):
+        s = self.scenario_file('setup.project = "my proj"\n[[steps]]\nedit = [{ file = "a.txt", replace = "hello", with = "bye" }]\n')
+        out_dir = self.tmp / "s.out"
+        code, out, _ = self.cli("check", str(s), "--json")
+        self.assertEqual(code, gs.EXIT_OK, out)
+        self.assertTrue(out.startswith(f"scenario: s\nproject:  {self.proj} (in place)\nhome:     "), out)
+        self.assertEqual(json.loads(out.rstrip("\n").splitlines()[-1])["project"], str(self.proj))
+        bare = self.scenario_file('[[steps]]\nedit = [{ file = "a.txt", replace = "hello", with = "bye" }]\n', name="t.toml")
+        code, _, err = self.cli("check", str(bare))
+        self.assertEqual((code, err.strip()), (gs.EXIT_ERROR, f"error: {bare}: steps[1].edit[1].file: 'a.txt' is not in the layout and no earlier step writes it"))
+        self.assertEqual(self.cli("check", str(bare), "--project", "my proj")[0], gs.EXIT_OK)
+        # setup has nothing to lay out, and no --project
+        code, out, err = self.cli("setup", str(s))
+        self.assertEqual((code, out, err.strip()), (gs.EXIT_ERROR, "", f"error: nothing to lay out: the project {self.proj} is used in place, as it is"))
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            gs.main(["setup", str(bare), "--project", "my proj"])
+        self.assertNotIn("--project", self.cli("help", "setup")[1])
+        self.assertFalse(out_dir.exists())
+        # stop-daemons needs no earlier run: the out dir is made for its log, and kept when it is gust's
+        code, out, _ = self.cli("stop-daemons", str(s), "--gradle", "gecho")
+        self.assertEqual(code, gs.EXIT_OK, out)
+        self.assertIn(f"project:  {self.proj} (in place)\nhome:     ", out)
+        self.assertEqual(sorted(p.name for p in out_dir.iterdir()), [gs.MARKER, "stop-daemons.log"])
+        self.assertEqual((out_dir / "stop-daemons.log").read_text().strip(), f"{home_arg()} --stop")
+        (out_dir / "step-01.log").write_text("from a run")
+        self.assertEqual(self.cli("stop-daemons", str(bare), "--project", "my proj", "--out", str(out_dir), "--gradle", "gecho")[0], gs.EXIT_OK)
+        self.assertTrue((out_dir / "step-01.log").is_file())
+        (self.tmp / "foreign").mkdir()
+        (self.tmp / "foreign" / "precious").write_text("")
+        code, _, err = self.cli("stop-daemons", str(s), "--out", str(self.tmp / "foreign"), "--gradle", "gecho")
+        self.assertEqual(code, gs.EXIT_ERROR)
+        self.assertIn("was not created by gust, so it is left alone", err)
+        self.assertEqual(self.files(), ["a.txt", "settings.gradle.kts"])
+        code, out, _ = self.cli("help", "run")
+        self.assertIn("--project DIR", out)
+
+    def test_flat_keeps_the_key(self):
+        code, out, err = self.cli("flat", str(self.scenario_file('[setup]\nproject = "my proj"\n' + self.STEPS)))
+        self.assertEqual((code, out, err), (gs.EXIT_OK, 'setup.project = "my proj"\n\n' + self.STEPS, ""))
 
 
 class FlatTest(GustCase):
