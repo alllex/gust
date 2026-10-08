@@ -102,10 +102,17 @@ Every key is in `gust spec`.
 
 With `setup.project = "<dir>"`, or `gust run loop.toml --project <dir>`, the
 steps run in that directory as it is, with no copy, so their writes and edits
-land in your real files. The console header has a `project: <dir> (in place)`
+land in your real files. The console header has a `project:  <dir> (in place)`
 line. The logs and `summary.json` still go to the out dir, and on a rerun only
-the out dir is cleared. `setup.layout` cannot be combined with it, and no
-wrapper is installed there, so `--gradle` takes a binary, not a version.
+the out dir is cleared. A rerun starts from the files as the last run left
+them; restore them between runs yourself, for example with git. `setup.layout`
+cannot be combined with it, and no wrapper is installed there, so a Gradle
+version is refused; pass a binary.
+
+With a run from inside the project, `<stem>.out/` and `.gust/` (a whole Gradle
+user home) are made there. To avoid that, pass `--out` or `--tmp` and set
+`GUST_DIR`, or have git ignore them. Both are removed by a reset step such as
+`git clean -fdx`.
 
 A scenario built on a layout file becomes one self-contained file with
 `gust flat loop.toml > loop.flat.toml`: the layout file's files are merged into
@@ -140,7 +147,7 @@ get them as `$GRADLE_ARGS`.
 
 ## What a run leaves behind
 
-Everything goes into the out dir:
+Everything goes into the out dir, apart from the changes to a project in place:
 
 | Invocation | Out dir |
 | --- | --- |
