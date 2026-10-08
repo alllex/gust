@@ -91,7 +91,7 @@ runs, so you can look around in it or run Gradle there by hand.
 | --- | --- |
 | `name` | optional; defaults to the file's stem (`loop` above) |
 | `description` | one line, recorded in the summary and shown by `check`; a run header has only the name |
-| `steps` | each one of `run.gradle`, `run.shell`, `write`, or `edit` |
+| `steps` | each one of `run.gradle`, `run.shell`, `write`, `edit`, `delete` (a directory, gone afterwards), or `clear` (a directory, there and empty afterwards) |
 | `expect`, on a run step | `"pass"`, `"fail"`, or a table of `exit`, `output`, and `no_output` substring checks |
 | `setup.layout.project` | the project's files, inline |
 | `setup.layout.base` | the project's files from a layout file |
@@ -101,13 +101,15 @@ runs, so you can look around in it or run Gradle there by hand.
 Every key is in `gust spec`.
 
 With `setup.project = "<dir>"`, or `gust run loop.toml --project <dir>`, the
-steps run in that directory as it is, with no copy, so their writes and edits
-land in your real files. The console header has a `project:  <dir> (in place)`
-line. The logs and `summary.json` still go to the out dir, and on a rerun only
-the out dir is cleared. A rerun starts from the files as the last run left
-them; restore them between runs yourself, for example with git. `setup.layout`
-cannot be combined with it, and no wrapper is installed there, so a Gradle
-version is refused; pass a binary.
+steps run in that directory as it is, with no copy, so their writes, edits,
+deletes, and clears land in your real files. Nothing outside the project dir,
+no `.git`, and neither the out dir nor `.gust` can be deleted or cleared there.
+The console header has a `project:  <dir> (in place)` line. The logs and
+`summary.json` still go to the out dir, and on a rerun only the out dir is
+cleared. A rerun starts from the files as the last run left them; restore them
+between runs yourself, for example with git. `setup.layout` cannot be combined
+with it, and no wrapper is installed there, so a Gradle version is refused;
+pass a binary.
 
 With a run from inside the project, `<stem>.out/` and `.gust/` (a whole Gradle
 user home) are made there. To avoid that, pass `--out` or `--tmp` and set

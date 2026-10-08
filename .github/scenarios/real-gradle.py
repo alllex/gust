@@ -55,6 +55,12 @@ def main():
     test = (project / "src/test/java/demo/GreeterTest.java").read_text(encoding="utf-8")
     if 'assertEquals("Hello, World!"' not in test or not (project / "build").is_dir() or (WORK / "in-place.out" / "project").exists():
         sys.exit("in-place.toml: the edit and the build must land in the project dir, and the out dir must have no project/")
+    (WORK / "in-place-tidy.toml").write_text(f'setup.project = "{project.name}"\n[[steps]]\nclear = "build"\n'
+                                             '[[steps]]\nrun.shell = \'test -d build && test -z "$(ls -A build)"\'\n'
+                                             '[[steps]]\ndelete = "build"\n', encoding="utf-8")
+    gust_cli(0, "run", "in-place-tidy.toml", "--keep-daemons")              # Gradle's real build dir, cleared, then deleted
+    if (project / "build").exists() or not (project / "src").is_dir():
+        sys.exit("in-place-tidy.toml: build must be gone from the project dir, and nothing else")
     gust_cli(0, "run", "wrapper.toml", "--gradle", "9.7.1")                # the wrapper install and gradlew.bat
     gust_cli(0, "run", "shell.toml")
     # a daemon left running, then a setup over its project
