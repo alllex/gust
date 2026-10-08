@@ -33,7 +33,7 @@ import tempfile
 import time
 import tomllib
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 __version__ = "12-dev"
 
@@ -67,7 +67,7 @@ TOP_KEYS = {"name", "description", "setup", "steps"}
 DEFAULT_NAME = "scenario"        # for a nameless scenario on stdin
 SETUP_KEYS = {"gradle", "layout"}
 LAYOUT_KEYS = {"base", "remote", "project"}
-STEP_KEYS = {"name", "run", "write", "edit"}
+STEP_KEYS = {"name", "run", "write", "edit", "delete", "clear"}
 RUN_KINDS = ("gradle", "shell")
 RUN_KEYS = {"gradle": {"args", "expect"}, "shell": {"command", "expect"}}
 EDIT_KEYS = {"file", "replace", "with"}
@@ -163,12 +163,24 @@ setup.layout.project                the project table (becomes <out>/project)
 A layout file (the target of base) has a single [project] table with the same
 rules, and no base of its own.
 
-steps[]                             each step has exactly one kind: run, write, or edit
+steps[]                             each step has exactly one kind: run, write, edit, delete, or clear
   name          string   optional   label; implied when absent: "Run: gradle test", "Edit: Foo.java"
   run           table    kind       run.gradle or run.shell; see below
   write         table    kind       <path> = <content>, as in the project table; creates or
                                     replaces files
   edit          array    kind       edits applied in order; see steps[].edit[]
+  delete        string   kind       a directory, removed with everything in it
+  clear         string   kind       a directory, emptied; the directory itself stays
+
+The directory of delete and clear is always relative to the project dir and
+inside it; this is a fixed rule, for safety. On every system, an absolute path
+in any form (/x, C:\\x, C:x, \\x, \\\\host\\share), a leading ~, any "..", and
+"." (the project dir itself) are refused when the scenario is loaded, and / and
+\\ both separate directories. Right before the step runs it is checked again:
+the path must not be a symbolic link (one is refused, not followed or
+removed), and with the links above it followed it must still be inside the
+project dir. Then it must be a directory. Otherwise nothing is removed and the
+run ends as an error.
 
 steps[].run.gradle                  Gradle with these arguments, run in the project dir
   shorthand     run.gradle = "test"   means { args = "test", expect = "pass" }
@@ -196,7 +208,7 @@ steps[].edit[]
   with          string   required   the replacement text
 
 The run stops at the first run step that fails a check (a deviation), or at a
-write or edit that cannot be applied (an error).
+write, edit, delete, or clear that cannot be applied (an error).
 
 Example
 -------
@@ -280,8 +292,9 @@ Commands
                                   with nothing set up, installed, or fetched (an uncached remote is
                                   noted). The only thing written is what the --version probe leaves
                                   in the Gradle user home. Output: the header with the description
-                                  under scenario:, `steps: N (K gradle, L shell, M write, P edit)`,
-                                  and result: ok, or the error. Worth running before a long run.
+                                  under scenario:, `steps: N (K gradle, L shell, M write, P edit,
+                                  Q delete, R clear)`, and result: ok, or the error. Worth running
+                                  before a long run.
                                   The --json summary is {scenario, description, gradle,
                                   gradle_version, steps (a count), step_counts, remote {link,
                                   cached} when there is one, status}.
@@ -356,9 +369,9 @@ and an outcome line:
                                          indented two spaces (`expected fail, got pass`, `output lacks
                                          'BUILD FAILED'`, `output has 'BUILD SUCCESSFUL', which
                                          no_output forbids`), then the log's last lines (--tail N,
-                                         default 30) unless the output was just shown. A write or edit
-                                         step: `ok: 2 files written`, `ok: 1 file edited`, or
-                                         `ERROR: <what went wrong>`.
+                                         default 30) unless the output was just shown. Any other
+                                         step: `ok: 2 files written`, `ok: 1 file edited`, `ok: build
+                                         deleted`, `ok: build cleared`, or `ERROR: <what went wrong>`.
   [AFT] Stop Gradle daemons -> stop-daemons-after.log
   result: ok (3/3 steps ran)             or deviated, or error; out of the scenario's steps
   out:      <out dir>                    the out dir again, as the last line, to have the path at hand
@@ -466,8 +479,11 @@ scenario's path (or stdin).
   - Python 3.11 or newer.
   - The scenario parses and every key is known; `name`, if given, is a slug
     ([A-Za-z0-9][A-Za-z0-9._-]*); every `edit` file is in the project table,
-    the remote checkout, or an earlier write step; no path in the project table
-    or a write step is both a file and the parent directory of another.
+    the remote checkout, or an earlier write step, and not under an earlier
+    delete or clear; every `delete` or `clear` path is not such a file and,
+    with no remote and no run step before it, has one of them under it; no path
+    in the project table or a write step is both a file and the parent
+    directory of another.
   - The scenario file exists (any name; the out dir is named after its stem),
     and the out dir does not contain it.
   - --gradle, if given, is a binary or a version as described under Commands;
@@ -477,7 +493,7 @@ scenario's path (or stdin).
     <out>/project), and --gradle, if given, is a binary.
   - With setup.layout.remote: git is on PATH and the link has a supported form.
     The checkout is fetched (or its HEAD compared) before the out dir is
-    touched, and edit targets are checked against it.
+    touched, and the paths of edit, delete, and clear are checked against it.
   - On Windows, with a shell step to run: the bash of Git for Windows, found
     from git on PATH.
   - With a Gradle version in play: gradle is on PATH to install its wrapper,
@@ -488,10 +504,10 @@ scenario's path (or stdin).
 Exit codes: 0 every step as expected; 1 a run step deviated from its
 expectation; 2 bad input (a failed precondition, a malformed scenario, bad
 arguments), a step that could not be carried out (an edit whose text was not
-found, a write onto a directory), or a failed wrapper install. summary.json is
-written for run only, and there it is present whenever the header was printed:
-on exit 1, and on exit 2 after the header. The daemon stops never change the
-exit code.
+found, a write onto a directory, a delete of a missing directory), or a failed
+wrapper install. summary.json is written for run only, and there it is present
+whenever the header was printed: on exit 1, and on exit 2 after the header. The
+daemon stops never change the exit code.
 """
 
 
@@ -508,7 +524,7 @@ class GustError(Exception):
 
 
 class StepError(Exception):
-    """A write or edit step that could not be carried out; an error, not a deviation."""
+    """A write, edit, delete, or clear step that could not be carried out; an error, not a deviation."""
 
 
 @dataclass(frozen=True)
@@ -549,6 +565,7 @@ class RunStep:
 class WriteStep:
     files: dict[str, str]
     name: str | None = None
+    kind = "write"
 
     def label(self) -> str:
         return self.name or "Write: " + ", ".join(Path(p).name for p in self.files)
@@ -565,12 +582,23 @@ class Edit:
 class EditStep:
     edits: list[Edit]
     name: str | None = None
+    kind = "edit"
 
     def label(self) -> str:
         return self.name or "Edit: " + ", ".join(dict.fromkeys(Path(e.file).name for e in self.edits))
 
 
-Step = RunStep | WriteStep | EditStep
+@dataclass(frozen=True)
+class DeleteStep:
+    kind: str                    # "delete": the dir is removed | "clear": the dir is emptied and kept
+    dir: str                     # relative to the project, with forward slashes
+    name: str | None = None
+
+    def label(self) -> str:
+        return self.name or f"{self.kind.capitalize()}: {self.dir}"
+
+
+Step = RunStep | WriteStep | EditStep | DeleteStep
 
 
 @dataclass(frozen=True)
@@ -606,9 +634,9 @@ class Scenario:
     gradle: str | None = None           # "wrapper" (the project's own ./gradlew), a version such as "9.7.1", or None
 
     def counts(self) -> dict[str, int]:
-        """The number of steps of each kind: gradle, shell, write, edit."""
-        kinds = [s.kind if isinstance(s, RunStep) else "write" if isinstance(s, WriteStep) else "edit" for s in self.steps]
-        return {k: kinds.count(k) for k in ("gradle", "shell", "write", "edit")}
+        """The number of steps of each kind: gradle, shell, write, edit, delete, clear."""
+        kinds = [s.kind for s in self.steps]
+        return {k: kinds.count(k) for k in ("gradle", "shell", "write", "edit", "delete", "clear")}
 
 
 # --------------------------------------------------------------------------- loading
@@ -654,36 +682,56 @@ def load_scenario(text: str, base_dir: Path | None = None, default_name: str | N
 
 
 def check_file_flow(scenario: Scenario, exists) -> None:
-    """Check that every edit's file exists by then, and that no path is both a file and a directory.
+    """Check that every edit's file exists by then, that the path of every delete or clear is a directory, and that no
+    path is both a file and a directory.
 
-    exists(rel) is whether the remote checkout, if any, has that file.
+    exists(rel) is whether the remote checkout, if any, has that file. A directory with no known file under it is
+    accepted with a remote or after a run step, since their directories are not seen here.
     """
     files: dict[str, str] = {}   # path -> where it first appears
-    dirs: dict[str, str] = {}    # ancestor dir -> a file under it
+    dirs: dict[str, str] = {}    # ancestor dir -> a file under it, and where that file appears
+    gone: list[tuple[str, ...]] = []           # the parts of each dir deleted or cleared so far
+    unseen = scenario.remote is not None       # whether a dir may exist with no known file under it
+
+    def seen(rel: str) -> bool:
+        """Whether the checkout has that file, and it is not under a dir deleted or cleared by then."""
+        return exists(rel) and not any(Path(rel).parts[:len(g)] == g for g in gone)
 
     def add(path: str, where: str) -> None:
         if path in dirs:
-            raise GustError(f"{where}: {path!r} conflicts with {dirs[path]!r} ({files[dirs[path]]}); one is a directory of the other")
+            raise GustError(f"{where}: {path!r} conflicts with {dirs[path]}; one is a directory of the other")
         parts = Path(path).parts
         for k in range(1, len(parts)):
             ancestor = "/".join(parts[:k])
-            if ancestor in files or exists(ancestor):
+            if ancestor in files or seen(ancestor):
                 origin = files.get(ancestor, "setup.layout.remote")
                 raise GustError(f"{where}: {path!r} conflicts with {ancestor!r} ({origin}); one is a directory of the other")
-            dirs.setdefault(ancestor, path)
+            dirs.setdefault(ancestor, f"{path!r} ({where})")
         files[path] = where
 
     for path in scenario.files:
         add(path, "setup.layout.project")
     for i, step in enumerate(scenario.steps, start=1):
-        if isinstance(step, WriteStep):
+        if isinstance(step, RunStep):
+            unseen = True
+        elif isinstance(step, WriteStep):
             for path in step.files:
                 add(path, f"steps[{i}].write")
         elif isinstance(step, EditStep):
             for j, edit in enumerate(step.edits, start=1):
-                if edit.file not in files and not exists(edit.file):
+                if edit.file not in files and not seen(edit.file):
                     raise GustError(
                         f"steps[{i}].edit[{j}].file: {edit.file!r} is not in the layout and no earlier step writes it")
+        else:
+            where, parts = f"steps[{i}].{step.kind}", Path(step.dir).parts
+            if step.dir in files or seen(step.dir):
+                raise GustError(f"{where}: {step.dir!r} is a file ({files.get(step.dir, 'setup.layout.remote')}), not a directory")
+            if step.dir not in dirs and not unseen:
+                raise GustError(f"{where}: {step.dir!r} is not a directory in the layout or an earlier write step")
+            for path in [p for p in (*files, *dirs) if Path(p).parts[:len(parts)] == parts and (p != step.dir or step.kind == "delete")]:
+                files.pop(path, None)
+                dirs.pop(path, None)
+            gone.append(parts)
 
 
 def _load_layout(raw: object, base_dir: Path | None) -> tuple[dict[str, str], Remote | None]:
@@ -757,13 +805,15 @@ def _load_step(raw: object, index: int) -> Step:
     if not isinstance(raw, dict):
         raise GustError(f"{where}: must be a table")
     _expect_keys(raw, where, STEP_KEYS)
-    kinds = [k for k in ("run", "write", "edit") if k in raw]
+    kinds = [k for k in ("run", "write", "edit", "delete", "clear") if k in raw]
     if len(kinds) != 1:
-        raise GustError(f"{where}: needs exactly one of 'run', 'write', or 'edit'")
+        raise GustError(f"{where}: needs exactly one of 'run', 'write', 'edit', 'delete', or 'clear'")
     name = _optional(raw, "name", str, where)
     kind = kinds[0]
     if kind == "run":
         return _load_run(raw["run"], f"{where}.run", name)
+    if kind in ("delete", "clear"):
+        return DeleteStep(kind=kind, dir=_dir_in_project(_require(raw, kind, str, where), f"{where}.{kind}"), name=name)
     if kind == "write":
         files = _load_files(raw["write"], f"{where}.write")
         if not files:
@@ -851,6 +901,18 @@ def _check_relative_path(path: str, where: str) -> None:
     p = Path(path)
     if not path or p.anchor or ".." in p.parts:       # an anchor is a root or a drive: "/", on Windows also "\" or "C:"
         raise GustError(f"{where}: path must be relative and must not contain '..'")
+
+
+def _dir_in_project(path: str, where: str) -> str:
+    """A delete or clear dir, with forward slashes. It is never absolute and never the project dir or above it, on any
+    system: read as a Windows path, where / and \\ both separate and drives and \\\\host\\share count as roots, so
+    every absolute form is refused everywhere. A leading ~ is refused too."""
+    p = PureWindowsPath(path)
+    if not path or p.anchor or ".." in p.parts or path.startswith("~"):
+        raise GustError(f"{where}: must be a path relative to the project dir, without '..' or a leading '~', got {path!r}")
+    if not p.parts:
+        raise GustError(f"{where}: {path!r} is the project dir itself; name a directory in it")
+    return p.as_posix()
 
 
 # --------------------------------------------------------------------------- setting up
@@ -1218,13 +1280,32 @@ def _apply_edit(project: Path, edit: Edit) -> None:
     path.write_text(text.replace(edit.replace, edit.with_), encoding="utf-8", newline="")
 
 
+def _delete_dir(project: Path, step: DeleteStep) -> None:
+    """Remove the dir with everything in it; for clear, make it again, empty.
+
+    Checked again right before: the dir may not be a link, and with the links above it followed it must still be
+    inside the project dir, so nothing outside the project is ever removed.
+    """
+    path = project / step.dir
+    if path.is_symlink():
+        raise StepError(f"{step.dir} is a symbolic link; only a real directory is deleted or cleared")
+    root, real = Path(os.path.realpath(project)), Path(os.path.realpath(path))
+    if real == root or not real.is_relative_to(root):
+        raise StepError(f"{step.dir} is outside the project dir once links are followed, so it is left alone")
+    if not path.is_dir():
+        raise StepError(f"{step.dir} is a file, not a directory" if path.exists() else f"no such directory {step.dir}; nothing to {step.kind}")
+    rmtree(path)
+    if step.kind == "clear":
+        path.mkdir()
+
+
 # --------------------------------------------------------------------------- running
 
 
 @dataclass
 class StepResult:
     index: int
-    kind: str                    # "gradle" | "shell" | "write" | "edit"
+    kind: str                    # "gradle" | "shell" | "write" | "edit" | "delete" | "clear"
     name: str                    # given or implied
     outcome: str                 # "pass" | "fail" | "done" | "error"
     expect: dict | None = None   # run steps only, like deviations
@@ -1423,14 +1504,17 @@ def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
     return result
 
 
-def _change_files(run: Run, step: WriteStep | EditStep, index: int) -> StepResult:
-    """Apply a write or edit step. A failure comes back as an error result, not an exception."""
-    kind = "write" if isinstance(step, WriteStep) else "edit"
-    files = list(step.files) if isinstance(step, WriteStep) else list(dict.fromkeys(e.file for e in step.edits))
+def _change_files(run: Run, step: WriteStep | EditStep | DeleteStep, index: int) -> StepResult:
+    """Apply a write, edit, delete, or clear step. A failure comes back as an error result, not an exception."""
+    kind = step.kind
+    files = (list(step.files) if isinstance(step, WriteStep) else [step.dir] if isinstance(step, DeleteStep)
+             else list(dict.fromkeys(e.file for e in step.edits)))
     try:
         if isinstance(step, WriteStep):
             for rel, content in step.files.items():
                 _write_file(run.project / rel, content)
+        elif isinstance(step, DeleteStep):
+            _delete_dir(run.project, step)
         else:
             for edit in step.edits:
                 _apply_edit(run.project, edit)
@@ -1440,8 +1524,8 @@ def _change_files(run: Run, step: WriteStep | EditStep, index: int) -> StepResul
         rel = Path(e.filename).relative_to(run.project) if e.filename and Path(e.filename).is_relative_to(run.project) else e.filename
         message = f"cannot {kind} {rel}: {e.strerror}"
     else:
-        n = len(files)
-        print(f"ok: {n} file{'s' if n != 1 else ''} {'written' if kind == 'write' else 'edited'}", file=run.out)
+        n, done = len(files), {"write": "written", "edit": "edited", "delete": "deleted", "clear": "cleared"}[kind]
+        print(f"ok: {step.dir} {done}" if isinstance(step, DeleteStep) else f"ok: {n} file{'s' if n != 1 else ''} {done}", file=run.out)
         return StepResult(index=index, kind=kind, name=step.label(), outcome="done", files=files)
     print(f"ERROR: {message}", file=run.out)
     return StepResult(index=index, kind=kind, name=step.label(), outcome="error", files=files, error=message)

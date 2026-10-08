@@ -186,7 +186,7 @@ class LoadScenarioTest(unittest.TestCase):
         self.assertEqual(s.files, {})
         self.assertEqual(s.steps, [gs.RunStep(kind="shell", command="true")])
         self.assertEqual(s.steps[0].expect, gs.Expect())
-        self.assertEqual(s.counts(), {"gradle": 0, "shell": 1, "write": 0, "edit": 0})
+        self.assertEqual(s.counts(), {"gradle": 0, "shell": 1, "write": 0, "edit": 0, "delete": 0, "clear": 0})
 
     def test_all_step_kinds(self):
         s = gs.load_scenario("""
@@ -222,7 +222,25 @@ with = "Y"
         self.assertEqual(s.steps[2], gs.RunStep(kind="gradle", command="help"))
         self.assertEqual(s.steps[3], gs.WriteStep(files={"a/b.txt": "bye", "c.txt": "c"}))
         self.assertEqual(s.steps[4].edits, [gs.Edit("a/b.txt", "b", "B"), gs.Edit("a/b.txt", "y", "Y")])
-        self.assertEqual(s.counts(), {"gradle": 2, "shell": 1, "write": 1, "edit": 1})
+        self.assertEqual(s.counts(), {"gradle": 2, "shell": 1, "write": 1, "edit": 1, "delete": 0, "clear": 0})
+
+    def test_delete_and_clear(self):
+        s = gs.load_scenario('name = "x"\n[setup.layout.project]\n"build/a/b.txt" = "b"\n"out/c.txt" = "c"\n'
+                             '[[steps]]\nclear = "build/"\n[[steps]]\nname = "n"\ndelete = "./out"\n')
+        self.assertEqual(s.steps, [gs.DeleteStep(kind="clear", dir="build"), gs.DeleteStep(kind="delete", dir="out", name="n")])
+        self.assertEqual([st.label() for st in s.steps], ["Clear: build", "n"])
+        self.assertEqual(s.counts(), {"gradle": 0, "shell": 0, "write": 0, "edit": 0, "delete": 1, "clear": 1})
+        self.assertEqual(gs.load_scenario('[[steps]]\nrun.shell = "x"\n[[steps]]\ndelete = \'a\\b/c\'').steps[1].dir, "a/b/c")   # \ separates everywhere
+        S = 'name = "x"\n[[steps]]\n'
+        for kind in ("delete", "clear"):                                                 # refused on every system, not only where they are roots
+            for path in ("/abs", "C:\\abs", "C:/abs", "C:rel", "\\abs", "\\\\host\\share\\x", "//host/share/x", "~", "~/x", "~user/x",
+                         "..", "../x", "a/../b", "a/..", "a\\..\\b", ""):
+                self.assert_rejects(S + f"{kind} = '{path}'",
+                                    f"steps[1].{kind}: must be a path relative to the project dir, without '..' or a leading '~', got {path!r}")
+            for path in (".", "./", ".\\", "./."):
+                self.assert_rejects(S + f"{kind} = '{path}'", f"steps[1].{kind}: {path!r} is the project dir itself; name a directory in it")
+        self.assert_rejects(S + 'delete = ["a"]', "steps[1].delete: must be str")
+        self.assert_rejects(S + 'delete = "a"\nclear = "a"', "exactly one of 'run', 'write', 'edit', 'delete', or 'clear'")
 
     def test_expect_table(self):
         s = gs.load_scenario("""
@@ -300,8 +318,8 @@ run.shell = "true"
                 self.assert_rejects(S + f'[setup.layout.project]\n"{path}" = "c"\n[[steps]]\nrun.shell = "x"', "must be relative")
         self.assert_rejects(S + '[setup.layout.project]\n"a/../b" = "c"\n[[steps]]\nrun.shell = "x"', "must not contain '..'")
         self.assert_rejects(S + '[setup.layout.project]\n"a" = 1\n[[steps]]\nrun.shell = "x"', "content must be a string")
-        self.assert_rejects(S + '[[steps]]\nrun.shell = "x"\n[steps.write]\n"y" = "z"', "exactly one of 'run', 'write', or 'edit'")
-        self.assert_rejects(S + '[[steps]]\nname = "n"', "exactly one of 'run', 'write', or 'edit'")
+        self.assert_rejects(S + '[[steps]]\nrun.shell = "x"\n[steps.write]\n"y" = "z"', "exactly one of 'run', 'write', 'edit', 'delete', or 'clear'")
+        self.assert_rejects(S + '[[steps]]\nname = "n"', "exactly one of 'run', 'write', 'edit', 'delete', or 'clear'")
         self.assert_rejects(S + '[[steps]]\nrun = "x"', "steps[1].run: must be run.gradle or run.shell")
         self.assert_rejects(S + '[[steps]]\nrun.gradle = "a"\nrun.shell = "b"', "exactly one of 'gradle' or 'shell'")
         self.assert_rejects(S + '[[steps]]\nrun.make = "a"', "steps[1].run: unknown key(s) make")
@@ -343,6 +361,21 @@ run.shell = "true"
         # fine: edit after write, overwrite of a known file, sibling paths
         gs.load_scenario(S + '[setup.layout.project]\n"a/b" = "1"\n"a/c" = "2"\n[[steps]]\n[steps.write]\n"f" = "a"\n"a/b" = "x"\n'
                          '[[steps]]\n[[steps.edit]]\nfile = "f"\nreplace = "a"\nwith = "b"')
+
+    def test_static_file_flow_of_delete_and_clear(self):
+        L = 'name = "x"\n[setup.layout.project]\n"build/a/b.txt" = "b"\n"f" = "x"\n'
+        edit = '[[steps]]\nedit = [{ file = "build/a/b.txt", replace = "b", with = "c" }]\n'
+        self.assert_rejects(L + '[[steps]]\ndelete = "build"\n' + edit, "steps[2].edit[1].file: 'build/a/b.txt' is not in the layout")
+        self.assert_rejects(L + '[[steps]]\nclear = "build/a"\n' + edit, "steps[2].edit[1].file")
+        self.assert_rejects(L + '[[steps]]\ndelete = "nope"', "steps[1].delete: 'nope' is not a directory in the layout or an earlier write step")
+        self.assert_rejects(L + '[[steps]]\ndelete = "build"\n[[steps]]\nclear = "build/a"', "steps[2].clear: 'build/a' is not a directory")
+        self.assert_rejects(L + '[[steps]]\nclear = "f"', "steps[1].clear: 'f' is a file (setup.layout.project), not a directory")
+        self.assert_rejects(L + '[[steps]]\nclear = "build"\n[[steps]]\nwrite.build = "x"',
+                            "steps[2].write: 'build' conflicts with 'build/a/b.txt' (setup.layout.project)")   # a cleared dir stays
+        # fine: any dir after a run step, a file where a deleted dir was, a file written again into a cleared dir
+        gs.load_scenario(L + '[[steps]]\nrun.gradle = "build"\n[[steps]]\nclear = "build/libs"\n[[steps]]\ndelete = "build"\n'
+                             '[[steps]]\nwrite.build = "now a file"')
+        gs.load_scenario(L + '[[steps]]\nclear = "build"\n[[steps]]\nwrite."build/a/b.txt" = "again"\n' + edit)
 
 
 class LayoutBaseTest(GustCase):
@@ -549,6 +582,21 @@ class LayoutRemoteTest(GustCase):
             self.run_scenario(scenario, self.tmp / "s.out", gradle="gecho", stop_daemons=False)
         self.assertIn("git ", str(cm.exception))
         self.assertFalse((self.gust / "remotes" / scenario.remote.identity).exists())
+
+    def test_delete_and_clear_with_remote(self):
+        layout = f'setup.layout.remote = "{self.url}#{self.sha}"'
+        scenario = self.load(layout, '[[steps]]\nclear = "sub"\n[[steps]]\nrun.shell = "test -d sub && test ! -e sub/note.txt"\n')
+        summary = self.run_scenario(scenario, self.tmp / "s.out", gradle="gecho")
+        self.assertEqual(summary.status, "ok", self.out.getvalue())
+        self.assertTrue((scenario.remote.dir / "sub" / "note.txt").is_file())                 # the checkout is left as it is
+        for steps, message in (
+                ('[[steps]]\ndelete = "sub"\n[[steps]]\nedit = [{ file = "sub/note.txt", replace = "remote", with = "x" }]\n',
+                 "steps[2].edit[1].file: 'sub/note.txt' is not in the layout"),
+                ('[[steps]]\ndelete = "settings.gradle.kts"\n', "steps[1].delete: 'settings.gradle.kts' is a file (setup.layout.remote), not a directory")):
+            with self.assertRaises(gs.GustError) as cm:
+                self.run_scenario(self.load(layout, steps), self.tmp / "t.out", gradle="gecho")
+            self.assertIn(message, str(cm.exception))
+        self.assertFalse((self.tmp / "t.out").exists())
 
     def test_mismatched_checkout_refused(self):
         import dataclasses
@@ -865,7 +913,7 @@ class LayoutRemoteTest(GustCase):
         self.assertEqual(code, gs.EXIT_OK, out)
         self.assertEqual(out, f"remote:   {self.url}#{self.sha} (not cached; fetched on run)\nscenario: s\n          Checks the remote.\n"
                               f"home:     {self.gust / gs.SHARED_HOME}\ngradle:   {WRAPPER} (scenario; not checked, remote not cached)\n"
-                              f"steps: 3 (1 gradle, 1 shell, 0 write, 1 edit)\nresult: ok\n")          # no out dir, so no out: line
+                              f"steps: 3 (1 gradle, 1 shell, 0 write, 1 edit, 0 delete, 0 clear)\nresult: ok\n")          # no out dir, so no out: line
         self.assertFalse((self.gust / "remotes").exists())
         self.assertFalse((self.tmp / "s.out").exists())
         # cached by a run: the wrapper is probed like any binary
@@ -877,7 +925,7 @@ class LayoutRemoteTest(GustCase):
         self.assertIn(f"gradle:   {WRAPPER} 9.7.1 (scenario)\nsteps: 3", out)
         self.assertEqual(json.loads(out.rstrip("\n").splitlines()[-1]),
                          {"scenario": "s", "description": "Checks the remote.", "gradle": WRAPPER, "gradle_version": "9.7.1",
-                          "steps": 3, "step_counts": {"gradle": 1, "shell": 1, "write": 0, "edit": 1},
+                          "steps": 3, "step_counts": {"gradle": 1, "shell": 1, "write": 0, "edit": 1, "delete": 0, "clear": 0},
                           "remote": {"link": f"{self.url}#{self.sha}", "cached": True}, "status": "ok"})
         self.assertFalse((self.tmp / "s.out").exists())
         # a binary is probed, a bad one refused; a version is settled without installing; a load error starts with the file
@@ -928,6 +976,40 @@ class SetupTest(GustCase):
         self.assertEqual((project / "lf.txt").read_bytes(), b"one\n2\n")                   # after an edit: LF, everywhere
         self.assertEqual((self.out_dir / gs.MARKER).read_text(),
                          "Marker for gust: this directory was produced by gust and may be replaced or removed by a later run.\n")
+
+    def test_delete_and_clear_read_only_files(self):
+        project = gs.lay_out(gs.load_scenario(MINIMAL), self.out_dir)
+        for kind in ("clear", "delete"):
+            obj = project / "repo" / ".git" / "objects" / "ab" / "cdef"                      # read-only, as git's objects are
+            obj.parent.mkdir(parents=True)
+            obj.write_text("")
+            obj.chmod(0o444)
+            gs._delete_dir(project, gs.DeleteStep(kind=kind, dir="repo"))
+            self.assertEqual([p.name for p in project.rglob("*")], ["repo"] if kind == "clear" else [], kind)   # kept and empty, or gone
+        self.assertTrue(project.is_dir())
+
+    def test_delete_and_clear_never_leave_the_project(self):
+        project = gs.lay_out(gs.load_scenario(MINIMAL), self.out_dir)
+        outside = self.tmp / "outside"
+        (outside / "sub").mkdir(parents=True)
+        (outside / "sub" / "precious").write_text("")
+        (project / "inner" / "x").mkdir(parents=True)
+        try:
+            (project / "link").symlink_to(outside, target_is_directory=True)
+            (project / "to-inner").symlink_to(project / "inner", target_is_directory=True)
+        except OSError:                                                                 # Windows without the privilege
+            self.skipTest("symbolic links cannot be made here")
+        for kind in ("delete", "clear"):
+            for rel, error in (("link", "link is a symbolic link; only a real directory is deleted or cleared"),
+                               ("to-inner", "to-inner is a symbolic link; only a real directory is deleted or cleared"),
+                               ("link/sub", "link/sub is outside the project dir once links are followed, so it is left alone")):
+                with self.assertRaises(gs.StepError) as cm:
+                    gs._delete_dir(project, gs.DeleteStep(kind=kind, dir=rel))
+                self.assertEqual(str(cm.exception), error)
+        self.assertTrue((outside / "sub" / "precious").is_file())
+        gs._delete_dir(project, gs.DeleteStep(kind="delete", dir="to-inner/x"))         # a link above that stays inside is fine
+        self.assertEqual(sorted(p.name for p in project.iterdir()), ["inner", "link", "to-inner"])
+        self.assertEqual(list((project / "inner").iterdir()), [])
 
     def test_empty_layout_still_makes_project_dir(self):
         project = gs.lay_out(gs.load_scenario(MINIMAL), self.out_dir)
@@ -1089,6 +1171,52 @@ run.shell = "touch should-not-exist"
         self.assertIn("result: error (2/3 steps ran)", self.out.getvalue())
         self.assertTrue((self.out_dir / "summary.json").is_file())
         self.assertFalse((self.project / "should-not-exist").exists())
+
+    def test_delete_and_clear(self):
+        summary = self.run_text("""
+name = "d"
+[setup.layout.project]
+"build/a.txt" = "a"
+"build/sub/b.txt" = "b"
+"out/c.txt" = "c"
+"keep.txt" = "k"
+[[steps]]
+clear = "build"
+[[steps]]
+name = "gone"
+delete = "out"
+[[steps]]
+run.shell = 'test -d build && test -z "$(ls -A build)" && test ! -e out'
+""")
+        self.assertEqual(summary.status, "ok", self.out.getvalue())
+        self.assertIn("[1/3] Clear: build\nok: build cleared\n[2/3] gone\nok: out deleted\n[3/3]", self.out.getvalue())
+        self.assertEqual(sorted(p.name for p in self.project.rglob("*")), ["build", "keep.txt"])
+        self.assertEqual(json.loads((self.out_dir / "summary.json").read_text())["steps"][:2], [
+            {"index": 1, "kind": "clear", "name": "Clear: build", "outcome": "done", "files": ["build"]},
+            {"index": 2, "kind": "delete", "name": "gone", "outcome": "done", "files": ["out"]}])
+
+    def test_delete_of_a_missing_dir_or_a_file_is_a_step_error(self):
+        for command, kind, error in (("rm -r d", "delete", "no such directory d; nothing to delete"),
+                                     ("rm -r d && touch d", "clear", "d is a file, not a directory")):
+            s = self.scenario_file(f'name = "m"\n[setup.layout.project]\n"d/f" = "x"\n[[steps]]\nrun.shell = "{command}"\n'
+                                   f'[[steps]]\n{kind} = "d"\n[[steps]]\nrun.shell = "touch should-not-exist"\n')
+            code, out, _ = self.cli("run", str(s), "--keep-daemons", "--json")
+            self.assertEqual(code, gs.EXIT_ERROR, out)
+            self.assertIn(f"[2/3] {kind.capitalize()}: d\nERROR: {error}\nresult: error (2/3 steps ran)", out)
+            self.assertEqual(json.loads(out.splitlines()[-1])["steps"][1],
+                             {"index": 2, "kind": kind, "name": f"{kind.capitalize()}: d", "outcome": "error", "files": ["d"], "error": error})
+            self.assertFalse((self.out_dir / "project" / "should-not-exist").exists())
+        code, out, _ = self.cli("check", str(s))
+        self.assertEqual(code, gs.EXIT_OK, out)
+        self.assertIn("steps: 3 (0 gradle, 2 shell, 0 write, 0 edit, 0 delete, 1 clear)\n", out)
+
+    @unittest.skipIf(gs.WINDOWS, "ln -s in the bash of Git for Windows copies by default")
+    def test_a_link_to_the_project_dir_is_refused_when_the_step_runs(self):
+        summary = self.run_text('name = "l"\n[setup.layout.project]\n"f" = "x"\n[[steps]]\nrun.shell = "ln -s .. up"\n'
+                                '[[steps]]\nclear = "up/project"\n')                    # passes the load, as a run step comes first
+        self.assertEqual(summary.status, "error")
+        self.assertEqual(summary.steps[1].error, "up/project is outside the project dir once links are followed, so it is left alone")
+        self.assertEqual(sorted(p.name for p in self.project.iterdir()), ["f", "up"])
 
     def test_output_checks_read_crlf_as_lf(self):
         summary = self.run_text('name = "crlf"\n[[steps]]\nrun.shell = { command = "printf \'a\\\\r\\\\nb\\\\r\\\\n\'", expect = { output = ["a\\nb"] } }')
