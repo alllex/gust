@@ -1866,6 +1866,27 @@ class InPlaceTest(GustCase):
         self.assert_rejects('[[steps]]\nwrite."a.txt/x" = ""\n', f"steps[1].write: 'a.txt/x' conflicts with 'a.txt' ({self.proj}); one is a directory of the other",
                             project=self.proj)
 
+    def test_delete_and_clear_in_place(self):
+        (self.proj / "build" / "libs").mkdir(parents=True)
+        (self.proj / "build" / "libs" / "app.jar").write_text("")
+        (self.proj / ".git" / "objects").mkdir(parents=True)
+        self.assert_rejects('[[steps]]\nclear = ".GIT/objects"\n', "steps[1].clear: a git repository's .git is never deleted or cleared, "
+                                                                  "got '.GIT/objects'", project=self.proj)
+        self.assert_rejects('[[steps]]\ndelete = "a.txt"\n', f"steps[1].delete: 'a.txt' is a file ({self.proj}), not a directory", project=self.proj)
+        out_dir = self.proj / "s.out"                                                   # the out dir and .gust inside the project
+        os.environ[gs.GUST_DIR_ENV] = str(self.proj / ".gust")
+        steps = '[[steps]]\nclear = "build"\n[[steps]]\ndelete = "nope"\n[[steps]]\nclear = "gen"\n[[steps]]\nrun.shell = "true"\n'
+        summary = self.run_scenario(gs.load_scenario(steps, project=self.proj), out_dir)
+        self.assertEqual(summary.status, "ok", self.out.getvalue())
+        self.assertIn("ok: build cleared\n[2/4] Delete: nope\nok: nope was not there\n[3/4] Clear: gen\nok: gen created\n", self.out.getvalue())
+        self.assertEqual(self.files(), [".git", ".git/objects", ".gust", ".gust/shared-gradle-user-home", "a.txt", "build", "gen",
+                                        "s.out", "s.out/.gust-run", "s.out/step-04.log", "s.out/summary.json", "settings.gradle.kts"])
+        for rel, own in (("s.out", out_dir), ("s.out/x", out_dir), (".gust", self.proj / ".gust"),
+                         (".gust/shared-gradle-user-home", self.proj / ".gust")):
+            summary = self.run_scenario(gs.load_scenario(f'[[steps]]\ndelete = "{rel}"\n', project=self.proj), out_dir)
+            self.assertEqual(summary.steps[0].error, f"{rel} overlaps {own}, one of gust's own dirs, so it is left alone")
+        self.assertTrue((self.proj / ".gust" / "shared-gradle-user-home").is_dir())
+
     def test_run_changes_the_real_dir(self):
         s = self.scenario_file('setup.project = "my proj"\n[[steps]]\nwrite."b.txt" = "written"\n'
                                '[[steps]]\nedit = [{ file = "a.txt", replace = "hello", with = "edited" }]\n'
