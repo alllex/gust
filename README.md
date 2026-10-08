@@ -91,7 +91,7 @@ runs, so you can look around in it or run Gradle there by hand.
 | --- | --- |
 | `name` | optional; defaults to the file's stem (`loop` above) |
 | `description` | one line, recorded in the summary and shown by `check`; a run header has only the name |
-| `steps` | each one of `run.gradle`, `run.shell`, `write`, `edit`, `delete` (a directory), or `clear` (a directory's contents) |
+| `steps` | each one of `run.gradle`, `run.shell`, `write`, `edit`, `delete` (a directory, gone afterwards), or `clear` (a directory, there and empty afterwards) |
 | `expect`, on a run step | `"pass"`, `"fail"`, or a table of `exit`, `output`, and `no_output` substring checks |
 | `setup.layout.project` | the project's files, inline |
 | `setup.layout.base` | the project's files from a layout file |
