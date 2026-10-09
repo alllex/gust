@@ -36,7 +36,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 
-__version__ = "12-dev"
+__version__ = "12"
 
 WINDOWS = os.name == "nt"
 
