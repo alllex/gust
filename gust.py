@@ -215,7 +215,7 @@ steps[].edit[]
   file          string   required   a file from the project table, the remote checkout, the
                                     project dir in place, or an earlier write step
   replace       string   required   non-empty; must occur exactly once in the file when the step runs,
-                                    where a line end matches CRLF and LF alike
+                                    where a line end matches CRLF, LF and CR alike
   with          string   required   the replacement text; its line ends are written as the file's
                                     when the file has only CRLF or only LF, else as they are
 
@@ -1378,8 +1378,8 @@ def _apply_edit(project: Path, edit: Edit) -> None:
     if not path.is_file():
         raise StepError(f"no such file {edit.file}; nothing to edit")
     text = path.read_bytes().decode("utf-8")                     # as it is: CRLF stays CRLF
-    lines = edit.replace.replace("\r\n", "\n").split("\n")
-    pattern = re.compile("\r?\n".join(map(re.escape, lines)))     # a line end matches either kind
+    lines = re.split(r"\r\n|\r|\n", edit.replace)
+    pattern = re.compile("(?>\r\n|\r|\n)".join(map(re.escape, lines)))     # a line end matches any kind; atomic: CRLF is one
     n = len(pattern.findall(text))
     if n != 1:
         raise StepError(f"{edit.replace!r} occurs {n} times in {edit.file}; an edit needs exactly one")

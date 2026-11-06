@@ -991,7 +991,11 @@ class SetupTest(GustCase):
             (b"a\r\nb\r\nc\r\n", "c", "d", b"a\r\nb\r\nd\r\n"),                       # the rest of the file is left as it is
             (b"a\r\nb\r\n", "a\r\nb", "x\r\ny", b"x\r\ny\r\n"),                       # \r\n written out means the same
             (b"a\r\nb", "b", "b\nc", b"a\r\nb\r\nc"),                                 # no final line end
-            (b"a\rb\r\nc\r\n", "c", "d", b"a\rb\r\nd\r\n"),                           # a lone \r is not a line end
+            (b"a\rb\r\nc\r\n", "c", "d", b"a\rb\r\nd\r\n"),                           # a lone \r is kept
+            (b"a\rb\n", "a\nb", "x", b"x\n"),                                       # a line end matches a lone \r too
+            (b"a\r\nb\r\n", "a\r", "Z", b"Zb\r\n"),                                # CRLF is one line end, never split
+            (b"a\r\nb\r\n", "\nb", "\nc", b"a\r\nc\r\n"),                         # replace starting with a line end
+            ("\u00e9\r\n\u20ac\r\n".encode(), "\u00e9\n\u20ac", "\u20ac\n\u00e9", "\u20ac\r\n\u00e9\r\n".encode()),   # multi-byte UTF-8
             (b"a\nb\nc\n", "b\nc", "y\n", b"a\ny\n\n"),                               # LF
             (b"a\nb\n", "a\r\nb", "x\r\ny", b"x\ny\n"),                               # LF: \r\n stands for LF
             (b"a\nb", "a\nb", "c", b"c"),                                             # no final line end
