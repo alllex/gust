@@ -66,6 +66,7 @@ gust check loop.toml         # validate it and settle the Gradle binary, run not
 gust setup loop.toml         # set the project up, run nothing
 gust stop-daemons loop.toml  # stop the daemons of the project's Gradle
 gust flat loop.toml          # print it with setup.layout.base inlined
+gust zip loop.toml           # write loop.zip, a reproducer to attach to an issue
 gust spec                    # the whole file format, with an example
 gust help run                # a command's options
 gust version
@@ -186,6 +187,33 @@ The working directory also gets `.gust/`, a cache that is safe to delete (set
     of the commands shown on the console and in `summary.json`.
   - Shell steps get it as `GRADLE_USER_HOME`.
   - A `--gradle-user-home` in a step, or on the command line, takes precedence.
+
+## Reproducer zip
+
+To attach a scenario's project to an issue, for someone without Gust:
+
+```
+gust zip loop.toml                        # writes loop.zip, which unzips to loop/
+gust zip loop.toml -o ~/repro-39193.zip   # unzips to repro-39193/
+```
+
+The zip holds the project's starting state, as `setup` lays it out, and a
+`REPRODUCER.md` with the scenario's name, description, and Gradle version, and
+each step as a shell snippet: `gradle <args>` for a Gradle step, with the
+expectations as comments, a heredoc for a write, a diff for `patch -p1` for an
+edit, and `rm -rf` for a delete or clear. The wrapper is left out, and so is the
+scenario file. In a shell step, `./gradlew` becomes `gradle`, and a step that
+still uses the wrapper, such as `test -x gradlew`, is refused.
+
+- No Gradle runs, and nothing is installed. The Gradle version comes from
+  `setup.gradle`, or from the wrapper's properties when the steps run with the
+  project's own wrapper; pass `--gradle 9.7.1` to name another.
+- The zip's path is the only line on stdout. An existing zip is never replaced,
+  and a scenario with `setup.project` is refused, since there is nothing to lay
+  out.
+- For the same scenario, `REPRODUCER.md` is the same, byte for byte, on every
+  machine: no timestamps, no absolute paths, no Gust version. The zip is the
+  same too wherever Python's zlib is the same.
 
 ## Exit codes
 
