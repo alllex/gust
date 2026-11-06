@@ -1345,20 +1345,16 @@ SETTINGS_FILES = ("settings.gradle", "settings.gradle.kts", "settings.gradle.dcl
 class GradleChoice:
     """The Gradle the steps run with, settled before the out dir is touched."""
     binary: str
-    source: str                        # "default", "scenario" (setup.gradle), or "cli" (--gradle)
+    source: str                        # as on the header line: "default", "scenario" (setup.gradle), or "--gradle"
     version: str | None = None         # from the --version probe, or the version to install as given
     install: bool = False              # a wrapper for version is installed first, with gradle from PATH
-    unchecked: str | None = None       # check only: why nothing was probed (the remote is not cached)
+    unchecked: bool = False            # check only: nothing was probed, since the remote is not cached
 
     @property
     def note(self) -> str:
         """The parenthetical of the gradle: header line."""
-        note = {"cli": "--gradle", "scenario": "scenario", "default": "default"}[self.source]
-        if self.install:
-            note += ", installed by gradle"
-        if self.unchecked:
-            note += f"; not checked, {self.unchecked}"
-        return note
+        return (self.source + (", installed by gradle" if self.install else "")
+                + ("; not checked, remote not cached" if self.unchecked else ""))
 
     @property
     def header(self) -> str:
@@ -1384,24 +1380,25 @@ def settle_gradle(scenario: Scenario, cli_value: str | None, root: Path | None, 
     def exists(rel: str) -> bool:
         return rel in scenario.files or (root is not None and (root / rel).is_file())
 
+    unfetched = root is None and scenario.remote is not None              # check with an unfetched remote
     if cli_value is None:
         source = "scenario" if scenario.gradle is not None else "default"
         install = scenario.gradle if scenario.gradle not in (None, "wrapper") else None
         if scenario.gradle is not None:
             binary = WRAPPER
-        elif root is None and scenario.remote is not None and needed:      # check with an unfetched remote: unknown
-            return GradleChoice("gradle", source, unchecked="remote not cached")
+        elif unfetched and needed:                                         # whether it has a wrapper is unknown
+            return GradleChoice("gradle", source, unchecked=True)
         else:                                                              # the project's own wrapper, else PATH
             binary = WRAPPER if root is not None and _executable(root / WRAPPER_FILE) else "gradle"
         label = binary if install is None else f"setup.gradle {install!r}"
     else:
-        source = "cli"
+        source = "--gradle"
         binary, install = _settle_binary(cli_value, exists)
         label = f"--gradle {cli_value!r}"
     if install is not None and scenario.project is not None:
         raise GustError(f"{label} is a version, but no wrapper is installed into a project in place; pass a binary")
     if install is not None and not may_install:
-        if source == "cli":
+        if cli_value is not None:
             raise GustError(f"--gradle {cli_value!r} is a version, but nothing is installed here; pass a binary (a name or a path)")
         install = None                                                   # set up already: the version's wrapper is in place
     if not (needed or cli_value is not None or install is not None):
@@ -1409,21 +1406,19 @@ def settle_gradle(scenario: Scenario, cli_value: str | None, root: Path | None, 
     if install is not None:
         if shutil.which("gradle") is None:
             raise GustError("a Gradle version was requested but no 'gradle' is on PATH to install its wrapper")
-        if root is None and scenario.remote is not None:                 # check with an unfetched remote
-            return GradleChoice(WRAPPER, source, version=install, install=True, unchecked="remote not cached")
+        if unfetched:
+            return GradleChoice(WRAPPER, source, version=install, install=True, unchecked=True)
         if not any(exists(f) for f in SETTINGS_FILES):
             raise GustError(f"{label}: a wrapper can only be installed into a Gradle build; add a settings file to the layout")
         return GradleChoice(WRAPPER, source, version=install, install=True)
+    if binary.startswith("./") and unfetched:                            # project-relative, the wrapper included
+        return GradleChoice(binary, source, unchecked=True)
     if cli_value is None:                                                # the default must be usable
-        if binary == WRAPPER and root is None and scenario.remote is not None:
-            return GradleChoice(binary, source, unchecked="remote not cached")
         if binary == WRAPPER and not exists(WRAPPER_FILE):
             raise GustError(f'setup.gradle = "wrapper" but {WRAPPER_FILE} is not among the project\'s files')
         if binary != WRAPPER and shutil.which(binary) is None:
             raise GustError(f"'{binary}' is not on PATH")
     if binary.startswith("./") and root is None:                         # project-relative, with nothing on disk yet
-        if scenario.remote is not None:
-            return GradleChoice(binary, source, unchecked="remote not cached")
         raise GustError("the wrapper's gradle/wrapper/gradle-wrapper.jar cannot come from an inline layout; use setup.layout.remote")
     return GradleChoice(binary, source, version=probe_gradle(binary, label, root if root is not None else Path.cwd(), user_home))
 
