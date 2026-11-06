@@ -1231,15 +1231,18 @@ run.shell = "touch should-not-exist"
         self.assertEqual(list(on_disk)[-3:], ["result", "error", "steps"])
 
     def test_run_step_that_cannot_start_is_an_error(self):
-        summary = self.run_text('name = "gone"\n[[steps]]\nrun.shell = "cd .. && rm -rf project"\n[[steps]]\nrun.shell = "true"\n'
-                                '[[steps]]\nrun.shell = "true"\n')
-        self.assertEqual((summary.result, len(summary.steps)), ("error", 2))
+        if gs.WINDOWS:   # the dir a process runs in cannot be removed there, but a Gradle step runs without a shell, so a gone binary fails to start
+            gone, gradle = 'run.shell = \'rm -f "$GRADLE"\'\n[[steps]]\nrun.gradle = "help"', str(self.script("goner", GECHO))
+        else:            # through sh, a gone binary is exit 127, but a gone project dir fails to start
+            gone, gradle = 'run.shell = "cd .. && rm -rf project"\n[[steps]]\nrun.shell = "true"', "gecho"
+        summary = self.run_text(f'name = "gone"\n[[steps]]\n{gone}\n[[steps]]\nrun.shell = "true"\n', gradle=gradle)
+        self.assertEqual((summary.result, len(summary.steps)), ("error", 2), self.out.getvalue())
         step = summary.steps[1]
-        self.assertEqual((step.result, step.checks, step.command), ("error", None, "true"))
-        self.assertTrue(step.error.startswith("cannot run true: "), step.error)
+        self.assertEqual((step.result, step.checks), ("error", None))
+        self.assertTrue(step.error.startswith(f"cannot run {step.command}: "), step.error)
         self.assertEqual(summary.error, step.error)
         printed = self.out.getvalue()
-        self.assertIn(f"[2/3] Run: true\n$ true\nERROR: {step.error}\nresult: ERROR (2/3 steps ran)\n", printed)
+        self.assertIn(f"\n$ {step.command}\nERROR: {step.error}\nresult: ERROR (2/3 steps ran)\n", printed)
         self.assertEqual(json.loads((self.out_dir / "summary.json").read_text())["error"], step.error)
 
     def test_write_onto_a_directory_is_a_step_error(self):
