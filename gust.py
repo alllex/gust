@@ -1612,7 +1612,6 @@ class Run:
         if self.out is None:
             self.out = sys.stdout
         self.color = color_on(self.out)
-        self.user_home.mkdir(parents=True, exist_ok=True)
 
     @property
     def project(self) -> Path:
@@ -1664,8 +1663,10 @@ def print_out(run: Run) -> None:
 
 
 def shared_home(gradle_user_home: Path | None) -> Path:
-    """--gradle-user-home, else .gust/shared-gradle-user-home, resolved."""
-    return (gradle_user_home or gust_dir() / SHARED_HOME).resolve()
+    """--gradle-user-home, else .gust/shared-gradle-user-home, resolved and made if missing."""
+    home = (gradle_user_home or gust_dir() / SHARED_HOME).resolve()
+    home.mkdir(parents=True, exist_ok=True)
+    return home
 
 
 def begin(run: Run, needed: bool) -> RunSummary:
@@ -2548,7 +2549,6 @@ def _cli_check(scenario: Scenario, gradle: str | None, user_home: Path, as_json:
             print(f"remote:   {remote.link}\ncheckout: {remote.dir} (cached)")
         else:
             print(f"remote:   {remote.link} (not cached; fetched on run)")
-    user_home.mkdir(parents=True, exist_ok=True)
     _check_shell(scenario)
     counts = scenario.counts()
     choice = settle_gradle(scenario, gradle, root, user_home, needed=counts["gradle"] > 0, may_install=True)
