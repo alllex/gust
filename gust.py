@@ -1208,7 +1208,7 @@ def fetch_remote(scenario: Scenario, out=None) -> dict | None:
     target = remote.dir
     fetched = False
     if (target / ".git").exists():
-        head = _git(target, "rev-parse", "HEAD").strip()
+        head = _git(target, "rev-parse", "HEAD").decode().strip()
         if not head.startswith(remote.sha) and not remote.sha.startswith(head):
             raise GustError(f"checkout {target} is at {head[:12]}, not {remote.sha}; delete it to refetch")
         if not remote.source.is_dir():
@@ -1236,13 +1236,13 @@ def fetch_remote(scenario: Scenario, out=None) -> dict | None:
     return {"link": remote.link, "checkout": str(target), "fetched": fetched}
 
 
-def _git(cwd: Path, *args: str, check: bool = True) -> str | None:
-    """git's stdout, run in cwd. On failure: GustError, or None when check is False."""
-    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+def _git(cwd: Path, *args: str, check: bool = True, input: bytes | None = None) -> bytes | None:
+    """git's stdout as bytes, run in cwd with input on stdin. On failure: GustError, or None when check is False."""
+    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, input=input)
     if proc.returncode != 0:
         if not check:
             return None
-        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        detail = (proc.stderr or proc.stdout).decode(errors="replace").strip().splitlines()
         raise GustError(f"git {args[0]} failed in {cwd}: {detail[-1] if detail else 'exit ' + str(proc.returncode)}")
     return proc.stdout
 
@@ -2112,11 +2112,8 @@ def _remote_files(remote: Remote) -> dict[str, tuple[int, bytes]]:
     or name case the checkout has. A symbolic link's bytes are its target, which must stay inside the project.
     Submodules are left out."""
     tree = f"HEAD:{remote.subdir}" if remote.subdir else "HEAD"
-    listing = subprocess.run(["git", "ls-tree", "-r", "-z", tree], cwd=remote.dir, capture_output=True)
-    if listing.returncode != 0:
-        raise GustError(f"git ls-tree failed in {remote.dir}: {listing.stderr.decode(errors='replace').strip()}")
     blobs = []
-    for record in filter(None, listing.stdout.split(b"\0")):
+    for record in filter(None, _git(remote.dir, "ls-tree", "-r", "-z", tree).split(b"\0")):
         meta, _, name = record.partition(b"\t")
         mode, kind, sha = meta.decode().split()
         try:
@@ -2125,11 +2122,8 @@ def _remote_files(remote: Remote) -> dict[str, tuple[int, bytes]]:
             raise GustError(f"setup.layout.remote: the name {name!r} is not UTF-8") from None
         if kind == "blob":
             blobs.append((rel, {"100755": EXEC_MODE, "120000": LINK_MODE}.get(mode, FILE_MODE), sha))
-    proc = subprocess.run(["git", "cat-file", "--batch"], cwd=remote.dir, capture_output=True,
-                          input="".join(f"{sha}\n" for _, _, sha in blobs).encode())
-    if proc.returncode != 0:
-        raise GustError(f"git cat-file failed in {remote.dir}: {proc.stderr.decode(errors='replace').strip()}")
-    files, data, pos = {}, proc.stdout, 0
+    data = _git(remote.dir, "cat-file", "--batch", input="".join(f"{sha}\n" for _, _, sha in blobs).encode())
+    files, pos = {}, 0
     for rel, mode, _ in blobs:                                # each: "<sha> blob <size>\n<bytes>\n"
         start = data.index(b"\n", pos) + 1
         size = int(data[pos:start].split()[2])
