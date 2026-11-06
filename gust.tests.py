@@ -2306,11 +2306,12 @@ class ColorTest(GustCase):
 
     def test_color_on(self):
         del os.environ["NO_COLOR"]
+        os.environ.pop("TERM", None)
         for env, stream, want in [({}, io.StringIO(), False), ({}, Tty(), True), ({"TERM": "dumb"}, Tty(), False),
                                   ({"NO_COLOR": "1"}, Tty(), False), ({"FORCE_COLOR": "1"}, io.StringIO(), True),
                                   ({"FORCE_COLOR": "1", "TERM": "dumb"}, Tty(), True),
                                   ({"NO_COLOR": "1", "FORCE_COLOR": "1"}, Tty(), False), ({"NO_COLOR": ""}, Tty(), True)]:
-            with unittest.mock.patch.dict(os.environ, env):
+            with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(gs, "WINDOWS", False):   # Tty has no console
                 self.assertEqual(gs.color_on(stream), want, env)
         with unittest.mock.patch.object(gs, "WINDOWS", True):
             self.assertFalse(gs.color_on(Tty()))                                         # no console handle behind it
