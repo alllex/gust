@@ -804,9 +804,9 @@ class LayoutRemoteTest(GustCase):
             self.assertEqual(code, gs.EXIT_ERROR, argv)
             errors.append(err.strip())
         self.assertEqual(errors, [
-            "error: --gradle 'nope': not found on PATH and not a Gradle version such as 9.7.1",
-            "error: --gradle './nope/gradle' is relative to the project dir but no such file is in the project",
-            "error: --gradle '9.7.1' is a version, but nothing is installed here; pass a binary (a name or a path)"])   # the first run set the project up
+            "ERROR: --gradle 'nope': not found on PATH and not a Gradle version such as 9.7.1",
+            "ERROR: --gradle './nope/gradle' is relative to the project dir but no such file is in the project",
+            "ERROR: --gradle '9.7.1' is a version, but nothing is installed here; pass a binary (a name or a path)"])   # the first run set the project up
         code, out, _ = self.cli("setup", str(s), "--gradle", "9.7.0")
         self.assertEqual(code, gs.EXIT_OK)
         self.assertIn("installed wrapper 9.7.0 via gradle", (self.tmp / "s.out" / "install-wrapper.log").read_text())
@@ -814,7 +814,7 @@ class LayoutRemoteTest(GustCase):
                               r"\[WRP\] Install Gradle wrapper 9\.7\.0\n\$ gradle wrapper .*\nexit=0 in .* -> install-wrapper\.log\nresult: set up\nout:      .*\n")
         gs.rmtree(self.tmp / "s.out")                                             # without a project: the hint comes first
         code, _, err = self.cli("stop-daemons", str(s), "--gradle", "9.7.1")
-        self.assertEqual((code, err.strip()), (gs.EXIT_ERROR, f"error: no set-up project at {self.tmp / 's.out' / 'project'}; run 'gust setup {s}' first"))
+        self.assertEqual((code, err.strip()), (gs.EXIT_ERROR, f"ERROR: no set-up project at {self.tmp / 's.out' / 'project'}; run 'gust setup {s}' first"))
         code, out, _ = self.cli("setup", str(s), "--gradle", "gecho")            # a binary: nothing to install, but probed
         self.assertEqual(code, gs.EXIT_OK)
         self.assertIn("gradle:   gecho 9.7.1 (--gradle)\n", out)
@@ -844,10 +844,10 @@ class LayoutRemoteTest(GustCase):
         gradlew = write_script(self.tmp / "s.out" / "project", "gradlew", 'print("not gradle")\n')   # the probe of a broken wrapper fails
         code, _, err = self.cli("stop-daemons", str(s))
         self.assertEqual(code, gs.EXIT_ERROR)
-        self.assertEqual(err.strip(), f"error: {WRAPPER}: not a Gradle binary (no 'Gradle <version>' line in the output of --version)")
+        self.assertEqual(err.strip(), f"ERROR: {WRAPPER}: not a Gradle binary (no 'Gradle <version>' line in the output of --version)")
         gradlew.unlink()                                                                     # and a missing one is named
         code, _, err = self.cli("stop-daemons", str(s))
-        self.assertEqual((code, err.strip()), (gs.EXIT_ERROR, f'error: setup.gradle = "wrapper" but {WRAPPER_FILE} is not among the project\'s files'))
+        self.assertEqual((code, err.strip()), (gs.EXIT_ERROR, f'ERROR: setup.gradle = "wrapper" but {WRAPPER_FILE} is not among the project\'s files'))
 
     def test_version_needs_a_gradle_build(self):
         self.fake_gradle_on_path()
@@ -867,7 +867,7 @@ class LayoutRemoteTest(GustCase):
         self.assertEqual(self.run_scenario(remote, self.tmp / "e.out").result, "success")
         code, _, err = self.cli("setup", "-", "--gradle", "9.7.1", "--out", str(self.tmp / "f.out"), stdin='[[steps]]\nrun.gradle = "help"\n')
         self.assertEqual(code, gs.EXIT_ERROR)
-        self.assertEqual(err.strip(), "error: --gradle '9.7.1': a wrapper can only be installed into a Gradle build; add a settings file to the layout")
+        self.assertEqual(err.strip(), "ERROR: --gradle '9.7.1': a wrapper can only be installed into a Gradle build; add a settings file to the layout")
 
     def test_scenario_version_is_probed_once_set_up(self):
         self.fake_gradle_on_path()                                                    # its --version says 9.7.1 whatever was requested
@@ -964,11 +964,11 @@ class LayoutRemoteTest(GustCase):
         self.script("notgradle", NOT_GRADLE)
         code, _, err = self.cli("check", str(s), "--gradle", "notgradle")
         self.assertEqual(code, gs.EXIT_ERROR)
-        self.assertIn("error: --gradle 'notgradle': not a Gradle binary", err)
+        self.assertIn("ERROR: --gradle 'notgradle': not a Gradle binary", err)
         bad = self.scenario_file("name = ", name="bad.toml")
         code, _, err = self.cli("check", str(bad))
         self.assertEqual(code, gs.EXIT_ERROR)
-        self.assertTrue(err.startswith(f"error: {bad}: not valid TOML"), err)
+        self.assertTrue(err.startswith(f"ERROR: {bad}: not valid TOML"), err)
         code, out, _ = self.cli("check", "-", stdin='[[steps]]\nrun.shell = "true"\n')
         self.assertEqual(code, gs.EXIT_OK)
         self.assertTrue(out.startswith(f"scenario: scenario\nhome:     {self.gust / gs.SHARED_HOME}\ngradle:   gradle (default)\n"), out)   # a shell-only scenario: nothing to probe
@@ -1202,9 +1202,12 @@ run.shell = "touch should-not-exist"
         self.out = io.StringIO()
         self.run_scenario(gs.load_scenario(text), self.tmp / "z.out", gradle="gecho", stop_daemons=False, tail=0)
         self.assertIn(f"\n{rule('last 0 of 3 lines of step-01.log')}\n{CLOSING}\n", self.out.getvalue())   # 0 shows nothing, not everything
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
             gs.main(["run", str(self.scenario_file(MINIMAL)), "--tail", "-1"])
         self.assertEqual(cm.exception.code, 2)
+        self.assertTrue(err.getvalue().startswith("usage: "), err.getvalue())                # a usage error ends in an ERROR: line too
+        self.assertRegex(err.getvalue(), r"\nERROR: argument --tail: .*\n$")
 
     def test_edit_error_stops_run(self):
         summary = self.run_text("""
@@ -1236,15 +1239,30 @@ run.shell = "touch should-not-exist"
             gone, gradle = 'run.shell = \'rm -f "$GRADLE"\'\n[[steps]]\nrun.gradle = "help"', str(self.script("goner", GECHO))
         else:            # through sh, a gone binary is exit 127, but a gone project dir fails to start
             gone, gradle = 'run.shell = "cd .. && rm -rf project"\n[[steps]]\nrun.shell = "true"', "gecho"
-        summary = self.run_text(f'name = "gone"\n[[steps]]\n{gone}\n[[steps]]\nrun.shell = "true"\n', gradle=gradle)
+        text = f'name = "gone"\n[[steps]]\n{gone}\n[[steps]]\nrun.shell = "true"\n'
+        summary = self.run_text(text, gradle=gradle, stop_daemons=True)
         self.assertEqual((summary.result, len(summary.steps)), ("error", 2), self.out.getvalue())
         step = summary.steps[1]
-        self.assertEqual((step.result, step.checks), ("error", None))
+        self.assertEqual((step.result, step.checks, step.exit_code, step.log), ("error", None, None, None))
         self.assertTrue(step.error.startswith(f"cannot run {step.command}: "), step.error)
         self.assertEqual(summary.error, step.error)
+        self.assertFalse((self.out_dir / "step-02.log").exists())                       # no log for a step that never started
+        after = summary.stop_daemons["after"]                                           # the stop after it cannot start either
+        self.assertEqual(list(after), ["error"])
         printed = self.out.getvalue()
-        self.assertIn(f"\n$ {step.command}\nERROR: {step.error}\nresult: ERROR (2/3 steps ran)\n", printed)
-        self.assertEqual(json.loads((self.out_dir / "summary.json").read_text())["error"], step.error)
+        self.assertIn(f"\n$ {step.command}\nERROR: {step.error}\n[AFT] Stop Gradle daemons -> stop-daemons-after.log\n"
+                      f"ERROR: {after['error']}\nresult: ERROR (2/3 steps ran)\nout:      {self.out_dir}\n", printed)
+        on_disk = json.loads((self.out_dir / "summary.json").read_text())
+        self.assertEqual((on_disk["error"], on_disk["stop_daemons"]["after"]), (step.error, after))
+        # with --show-output: no rule is opened for a step that never started
+        self.out = io.StringIO()
+        if gs.WINDOWS:
+            gradle = str(self.script("goner", GECHO))
+        summary = self.run_scenario(gs.load_scenario(text), self.tmp / "so.out", gradle=gradle, show_output=True)
+        printed = self.out.getvalue()
+        self.assertEqual(summary.result, "error", printed)
+        self.assertNotIn(gs.opening_rule("step-02.log"), printed)
+        self.assertIn(f"\n$ {summary.steps[1].command}\nERROR: ", printed)
 
     def test_write_onto_a_directory_is_a_step_error(self):
         summary = self.run_text("""
@@ -1605,7 +1623,7 @@ class CliTest(GustCase):
         self.assertIn(f"out:      {self.tmp / 'loop.out'}\n", out)                    # the stem of any file name
         code, _, err = self.cli("run", str(self.tmp / "nosuch.txt"))
         self.assertEqual(code, gs.EXIT_ERROR)
-        self.assertEqual(err.strip(), f"error: scenario file not found: {self.tmp / 'nosuch.txt'}")   # the missing file comes first
+        self.assertEqual(err.strip(), f"ERROR: scenario file not found: {self.tmp / 'nosuch.txt'}")   # the missing file comes first
 
     def test_run_exit_codes(self):
         self.assertEqual(self.cli("run", str(self.scenario_file(MINIMAL)), "--out", str(self.tmp / "a"), "--keep-daemons")[0], gs.EXIT_OK)
@@ -1624,7 +1642,7 @@ class CliTest(GustCase):
             self.assertEqual(code, gs.EXIT_ERROR, argv)
             self.assertEqual(out, "", argv)                                                # no stray header before a failed precondition
             errors.append(err.strip())
-        self.assertEqual(errors[0], f"error: {self.tmp / 's.toml'}: top level.name: must be str")   # a load error starts with its source
+        self.assertEqual(errors[0], f"ERROR: {self.tmp / 's.toml'}: top level.name: must be str")   # a load error starts with its source
         self.assertIn("scenario file not found", errors[1])
         self.assertIn("would be removed with the earlier run", errors[2])
         self.assertIn("not found on PATH and not a Gradle version", errors[3])
@@ -1648,7 +1666,7 @@ class CliTest(GustCase):
         out_dir = self.tmp / "s.out"
         code, out, err = self.cli("stop-daemons", str(s), "--gradle", "gecho")               # nothing set up yet
         self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
-        self.assertEqual(err.strip(), f"error: no set-up project at {out_dir / 'project'}; run 'gust setup {s}' first")
+        self.assertEqual(err.strip(), f"ERROR: no set-up project at {out_dir / 'project'}; run 'gust setup {s}' first")
         self.assertFalse(out_dir.exists())                                                   # nothing was set up on the way
         (out_dir / "project").mkdir(parents=True)                                            # a project dir without the marker is not ours
         self.assertEqual(self.cli("stop-daemons", str(s), "--gradle", "gecho")[0], gs.EXIT_ERROR)
@@ -1746,7 +1764,7 @@ class CliTest(GustCase):
         # usage errors
         code, _, err = self.cli("run", str(s), "--tmp", "--out", str(self.tmp / "o"))
         self.assertEqual(code, gs.EXIT_ERROR)
-        self.assertIn("error: --tmp and --out cannot be combined", err)
+        self.assertIn("ERROR: --tmp and --out cannot be combined", err)
         for argv in (["stop-daemons", str(s), "--tmp"], ["check", str(s), "--tmp"]):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 gs.main(argv)                                                            # no --tmp there
@@ -1768,9 +1786,9 @@ class CliTest(GustCase):
         self.assertIn(f"scenario: piped\nout:      {self.tmp / 'piped.out'}\n", out)
         # a TTY, and empty input
         code, _, err = self.cli("run", "-", stdin=Tty(""))
-        self.assertEqual((code, err.strip()), (gs.EXIT_ERROR, "error: SCENARIO is '-' but nothing is piped on stdin"))
+        self.assertEqual((code, err.strip()), (gs.EXIT_ERROR, "ERROR: SCENARIO is '-' but nothing is piped on stdin"))
         code, _, err = self.cli("run", "-", stdin="")
-        self.assertEqual((code, err.strip()), (gs.EXIT_ERROR, "error: stdin: scenario has no steps"))
+        self.assertEqual((code, err.strip()), (gs.EXIT_ERROR, "ERROR: stdin: scenario has no steps"))
         # setup -, stop-daemons -, and its hint
         gradle = '[[steps]]\nrun.gradle = "help"\n'
         code, out, _ = self.cli("setup", "-", "--out", str(self.tmp / "piped-setup"), stdin=gradle)
@@ -1782,7 +1800,7 @@ class CliTest(GustCase):
         self.assertIn("[STOP] Stop Gradle daemons", out)
         code, _, err = self.cli("stop-daemons", "-", "--out", str(self.tmp / "nowhere"), stdin=gradle)
         self.assertEqual(code, gs.EXIT_ERROR)
-        self.assertEqual(err.strip(), f"error: no set-up project at {self.tmp / 'nowhere' / 'project'}; pipe the same scenario to 'gust setup -' first")
+        self.assertEqual(err.strip(), f"ERROR: no set-up project at {self.tmp / 'nowhere' / 'project'}; pipe the same scenario to 'gust setup -' first")
         # --tmp: the name is the stem
         self.patch("TMP_ROOT", self.tmp / "fake-tmp")
         code, out, _ = self.cli("run", "-", "--tmp", "--keep-daemons", stdin='[[steps]]\nrun.shell = "true"\n')
@@ -1814,7 +1832,7 @@ class CliTest(GustCase):
         for argv, name in (((["setup", str(s), "--", "--offline"]), "setup"), ((["stop-daemons", str(s), "--gradle", "gecho", "--", "--offline"]), "stop-daemons")):
             code, _, err = self.cli(*argv)
             self.assertEqual(code, gs.EXIT_ERROR)
-            self.assertEqual(err.strip(), f"error: arguments after -- are accepted by run only ({name} runs no Gradle step)")
+            self.assertEqual(err.strip(), f"ERROR: arguments after -- are accepted by run only ({name} runs no Gradle step)")
 
     def test_trace(self):
         self.script("tracer", TRACER)
@@ -1957,7 +1975,7 @@ class InPlaceTest(GustCase):
         # an out dir that holds the project dir is refused, as it would be removed on a rerun
         code, out, err = self.cli("run", str(s), "--project", "my proj", "--out", str(self.proj))
         self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
-        self.assertEqual(err.strip(), f"error: out dir {self.proj} contains the project dir {self.proj}; it would be removed with the earlier run")
+        self.assertEqual(err.strip(), f"ERROR: out dir {self.proj} contains the project dir {self.proj}; it would be removed with the earlier run")
         self.assertEqual(self.files(), before)
 
     def test_gradle_default_is_the_dirs_wrapper(self):
@@ -2018,11 +2036,11 @@ class InPlaceTest(GustCase):
         self.assertEqual(json.loads(out.rstrip("\n").splitlines()[-1])["project"], str(self.proj))
         bare = self.scenario_file('[[steps]]\nedit = [{ file = "a.txt", replace = "hello", with = "bye" }]\n', name="t.toml")
         code, _, err = self.cli("check", str(bare))
-        self.assertEqual((code, err.strip()), (gs.EXIT_ERROR, f"error: {bare}: steps[1].edit[1].file: 'a.txt' is not in the layout and no earlier step writes it"))
+        self.assertEqual((code, err.strip()), (gs.EXIT_ERROR, f"ERROR: {bare}: steps[1].edit[1].file: 'a.txt' is not in the layout and no earlier step writes it"))
         self.assertEqual(self.cli("check", str(bare), "--project", "my proj")[0], gs.EXIT_OK)
         # setup has nothing to lay out, and no --project
         code, out, err = self.cli("setup", str(s))
-        self.assertEqual((code, out, err.strip()), (gs.EXIT_ERROR, "", f"error: nothing to lay out: the project {self.proj} is used in place, as it is"))
+        self.assertEqual((code, out, err.strip()), (gs.EXIT_ERROR, "", f"ERROR: nothing to lay out: the project {self.proj} is used in place, as it is"))
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             gs.main(["setup", str(bare), "--project", "my proj"])
         self.assertNotIn("--project", self.cli("help", "setup")[1])
@@ -2130,7 +2148,7 @@ run.shell = "true"
         self.assertNotIn("base =", out)
         code, out, err = self.cli("flat", "-", stdin='setup.layout.base = "nope.toml"\n[[steps]]\nrun.shell = "true"\n')
         self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
-        self.assertEqual(err, f"error: stdin: setup.layout.base: no such file {self.tmp / 'nope.toml'}\n")
+        self.assertEqual(err, f"ERROR: stdin: setup.layout.base: no such file {self.tmp / 'nope.toml'}\n")
         code, out, err = self.cli("flat", "-", "--", "x", stdin="")
         self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
 
@@ -2289,7 +2307,7 @@ class SpecTest(unittest.TestCase):
                      "out directory", "\u2014", "--trust-wrapper", "sha256", "checksum", "versions feed", "bootstrap", "verif", ".prev",
                      "previous:", "(per ", "(reused)", "must end in .toml", "three meanings", "step SCENARIO", "gust step",
                      "N [N ...]", "step through", "last full run", "deviat", "DEVIATION", "status", "ok: ", "result: ok",
-                     "result: error", "exit 0 in", "exit N"):
+                     "result: error", "exit 0 in", "exit N", "`error: "):
             for where, text in (("spec", gs.FORMAT_SPEC), ("README", readme), ("help", help_out.getvalue())):
                 self.assertNotIn(gone, text, f"{gone!r} in {where}")
         for command in ("check SCENARIO", "stop-daemons SCENARIO [--out DIR] [--gradle BIN] [--gradle-user-home DIR]"):
