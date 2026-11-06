@@ -202,16 +202,18 @@ The zip holds the project's starting state, as `setup` lays it out, and a
 each step as a shell snippet: `gradle <args>` for a Gradle step, with the
 expectations as comments, a heredoc for a write, a diff for `patch -p1` for an
 edit, and `rm -rf` for a delete or clear. The wrapper is left out, and so is the
-scenario file; `./gradlew` in a shell step reads `gradle` there.
+scenario file. In a shell step, `./gradlew` becomes `gradle`, and a step that
+still uses the wrapper, such as `test -x gradlew`, is refused.
 
 - No Gradle runs, and nothing is installed. The Gradle version comes from
-  `setup.gradle`, or from the wrapper's properties with `setup.gradle = "wrapper"`;
-  pass `--gradle 9.7.1` to name another.
+  `setup.gradle`, or from the wrapper's properties when the steps run with the
+  project's own wrapper; pass `--gradle 9.7.1` to name another.
 - The zip's path is the only line on stdout. An existing zip is never replaced,
   and a scenario with `setup.project` is refused, since there is nothing to lay
   out.
-- For the same scenario, the zip is the same, byte for byte: no timestamps, no
-  absolute paths, no Gust version.
+- For the same scenario, `REPRODUCER.md` is the same, byte for byte, on every
+  machine: no timestamps, no absolute paths, no Gust version. The zip is the
+  same too wherever Python's zlib is the same.
 
 ## Exit codes
 
