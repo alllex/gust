@@ -1449,6 +1449,12 @@ def _apply_edit(project: Path, edit: Edit) -> None:
         text = path.read_bytes().decode("utf-8")                 # as it is: CRLF stays CRLF
     except UnicodeDecodeError:
         raise StepError(f"{edit.file} is not UTF-8 text; nothing to edit") from None
+    path.write_text(_edited_text(text, edit), encoding="utf-8", newline="")
+
+
+def _edited_text(text: str, edit: Edit) -> str:
+    """The text with the edit applied: a line end in the replaced text matches any kind, and in a file with one kind,
+    a bare \n in the replacement is written as that kind. StepError unless the replaced text occurs exactly once."""
     lines = re.split(r"\r\n|\r|\n", edit.replace)
     pattern = re.compile("(?>\r\n|\r|\n)".join(map(re.escape, lines)))     # a line end matches any kind; atomic: CRLF is one
     n = len(pattern.findall(text))
@@ -1457,7 +1463,7 @@ def _apply_edit(project: Path, edit: Edit) -> None:
     with_ = edit.with_
     if eol := _line_end(text):                                   # a bare \n written as the file's own line end
         with_ = re.sub(r"(?<!\r)\n", lambda _: eol, with_)
-    path.write_text(pattern.sub(lambda _: with_, text), encoding="utf-8", newline="")
+    return pattern.sub(lambda _: with_, text)
 
 
 def _line_end(text: str) -> str | None:
@@ -2183,20 +2189,11 @@ def _expect_comments(expect: Expect) -> list[str]:
 
 
 def _edited(text: str, edit: Edit, where: str) -> str:
-    """The text after the edit, as a run makes it: a line end in the replaced text matches CRLF, CR, or LF alike, and
-    in a file with one kind of line end, a bare LF in the replacement is written as that kind.
-
-    The same rules as _apply_edit's, for a file in memory; once _apply_edit keeps line ends, this can call it."""
-    pattern = re.compile("(?>\r\n|\r|\n)".join(map(re.escape, re.split(r"\r\n|\r|\n", edit.replace))))
-    n = len(pattern.findall(text))
-    if n != 1:
-        raise GustError(f"{where}.replace: {edit.replace!r} occurs {n} times in {edit.file} when the step runs; an edit needs exactly one")
-    crlf = text.count("\r\n")
-    lf = text.count("\n") - crlf
-    with_ = edit.with_
-    if crlf and not lf:                                       # a CRLF file: a bare LF in the replacement as CRLF
-        with_ = re.sub(r"(?<!\r)\n", "\r\n", with_)
-    return pattern.sub(lambda _: with_, text)
+    """The text after the edit, as a run makes it, with where (steps[i].edit[j]) in the message of a failure."""
+    try:
+        return _edited_text(text, edit)
+    except StepError as e:
+        raise GustError(f"{where}.replace: {e}") from None
 
 
 def _sh_write(rel: str, content: str) -> list[str]:

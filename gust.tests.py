@@ -2337,7 +2337,7 @@ rm -rf build
                              [b"a\nc", b"one\r\ndeux\r\n", b"x\n", b"y\n"])
         with self.assertRaises(gs.GustError) as cm:            # a multi-line replace that fits only with CRLF read as LF
             self.readme('[setup.layout.project]\n"c.txt" = "a\\r\\nb\\r\\n"\n[[steps]]\nedit = [{ file = "c.txt", replace = "a\\nb\\nc", with = "" }]\n')
-        self.assertEqual(str(cm.exception), "steps[1].edit[1].replace: 'a\\nb\\nc' occurs 0 times in c.txt when the step runs; an edit needs exactly one")
+        self.assertEqual(str(cm.exception), "steps[1].edit[1].replace: 'a\\nb\\nc' occurs 0 times in c.txt; an edit needs exactly one")
         crlf = '[setup.layout.project]\n"c.txt" = "a\\r\\nb\\r\\n"\n[[steps]]\nedit = [{ file = "c.txt", replace = "a\\nb", with = "x\\ny" }]\n'
         self.assertIn("printf 'x\\r\ny\\r\n' > c.txt\n", self.readme(crlf))       # LF matches CRLF, and is written as CRLF there
 
