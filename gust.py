@@ -1697,8 +1697,7 @@ def begin(run: Run, needed: bool) -> RunSummary:
 def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
     """Set up, stop daemons, run the steps up to the first unexpected check or error, and stop daemons again.
 
-    Ends with summary.json and the result: and out: lines. No log tail is printed after an unexpected
-    check when the output was shown.
+    Ends with summary.json and the result: and out: lines.
     """
     steps = run.scenario.steps
     _check_shell(run.scenario)
@@ -1710,13 +1709,9 @@ def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
             print(f"[{i}/{len(steps)}] {step.label()}", file=run.out)
             result = _run_command(run, step, i) if isinstance(step, RunStep) else _change_files(run, step, i)
             summary.steps.append(result)
-            if result.result == "error":
-                summary.result, summary.error = "error", result.error
-                break
-            if result.result == "unexpected":
-                summary.result = "failure"
-                if not run.show_output:
-                    _print_tail(run.out_dir / result.log, run.tail, run.out)
+            if result.result in ("error", "unexpected"):
+                summary.result = "failure" if result.result == "unexpected" else "error"
+                summary.error = result.error                             # None for an unexpected check
                 break
         if stop_daemons:
             summary.stop_daemons["after"] = _stop_daemons(run, "[AFT]", "stop-daemons-after.log", full=False)
@@ -1728,6 +1723,8 @@ def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
 
 
 def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
+    """Run a run.gradle or run.shell step: the `$` line, the result line, each unexpected check, and then the log's
+    tail unless the output was shown, as _install_wrapper does after a failed install."""
     log_rel, trace_rel = f"step-{index:02d}.log", f"step-{index:02d}-ops-log.txt"   # the trace file: its base + -log.txt
     trace = run.out_dir / trace_rel.removesuffix("-log.txt") if run.trace and step.kind == "gradle" else None
     if step.kind == "gradle":
@@ -1758,6 +1755,8 @@ def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
           file=run.out)
     for check in unexpected:
         print(f"  {describe_check(check)}", file=run.out)
+    if unexpected and not run.show_output:
+        _print_tail(run.out_dir / log_rel, run.tail, run.out)
     return result
 
 
