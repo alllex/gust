@@ -1628,6 +1628,10 @@ class Run:
     def command(self, args: str, trace: Path | None = None) -> GradleCommand:
         return GradleCommand(self.choice.binary, args, self.user_home, trace)
 
+    def error(self, message: str) -> None:
+        """An `ERROR: <message>` line on the console."""
+        print(f"{paint(ERROR, self.color)}: {message}", file=self.out)
+
 
 def _for_bash(binary: str) -> str:
     """The binary as $GRADLE: as it is, and on Windows as a full path with forward slashes, since bash on Windows
@@ -1732,21 +1736,19 @@ def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
     else:
         argv, shown = shell_argv(step.command), step.command      # shown as written
     print(f"$ {shown}", file=run.out)
-    started = time.monotonic()
     try:
-        exit_code = _run_logged(argv, run.project, run.env, run.out_dir / log_rel, run.out if run.show_output else None)
+        exit_code, duration = _run_logged(argv, run.project, run.env, run.out_dir / log_rel, run.out if run.show_output else None)
     except OSError as e:                                           # the project dir or the binary is gone, say
         message = cannot_run(shown, e)
-        print(f"{paint(ERROR, run.color)}: {message}", file=run.out)
+        run.error(message)
         return StepResult(index=index, kind=step.kind, name=step.label(), result="error", command=shown, error=message)
-    duration = time.monotonic() - started
     output_text = (run.out_dir / log_rel).read_text(encoding="utf-8", errors="replace")   # CRLF read as LF
     checks = step.expect.checks(exit_code, output_text)
     unexpected = [c for c in checks if c["result"] == "unexpected"]
     traced = trace is not None and (run.out_dir / trace_rel).is_file()
     result = StepResult(
         index=index, kind=step.kind, name=step.label(), result="unexpected" if unexpected else "expected",
-        checks=checks, exit_code=exit_code, duration_s=round(duration, 1), log=log_rel,
+        checks=checks, exit_code=exit_code, duration_s=duration, log=log_rel,
         trace=trace_rel if traced else None, command=shown,
     )
     n = len(step.expect.output) + len(step.expect.no_output)       # the output checks
@@ -1789,7 +1791,7 @@ def _change_files(run: Run, step: WriteStep | EditStep | DeleteStep, index: int)
         print(f"{step.dir} {done}" if isinstance(step, DeleteStep)
               else f"{n} file{'s' if n != 1 else ''} {'written' if kind == 'write' else 'edited'}", file=run.out)
         return StepResult(index=index, kind=kind, name=step.label(), result="done", files=files)
-    print(f"{paint(ERROR, run.color)}: {message}", file=run.out)
+    run.error(message)
     return StepResult(index=index, kind=kind, name=step.label(), result="error", files=files, error=message)
 
 
@@ -1804,19 +1806,19 @@ def _stop_daemons(run: Run, label: str, log_name: str, full: bool) -> dict:
     print(f"{label} Stop Gradle daemons" + ("" if full else f" -> {log_name}"), file=run.out)
     if full:
         print(f"$ {command.shown}", file=run.out)
-    started = time.monotonic()
     try:
-        exit_code = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ), run.out_dir / log_name, None)
+        exit_code, duration = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ),
+                                          run.out_dir / log_name, None)
     except OSError as e:                                           # the project dir is gone, say: a failed stop, no log
         message = cannot_run(command.shown, e)
-        print(f"{paint(ERROR, run.color)}: {message}", file=run.out)
+        run.error(message)
         return {"error": message}
-    duration = time.monotonic() - started
+    line = f"exit={exit_code} in {duration:.1f}s -> {log_name}"
     if exit_code != 0:
-        print(f"{paint(ERROR, run.color)}: exit={exit_code} in {duration:.1f}s -> {log_name}", file=run.out)
+        run.error(line)
     elif full:
-        print(f"exit={exit_code} in {duration:.1f}s -> {log_name}", file=run.out)
-    return {"exit_code": exit_code, "duration_s": round(duration, 1), "log": log_name}
+        print(line, file=run.out)
+    return {"exit_code": exit_code, "duration_s": duration, "log": log_name}
 
 
 def _install_wrapper(run: Run) -> dict:
@@ -1829,16 +1831,15 @@ def _install_wrapper(run: Run) -> dict:
     command = GradleCommand("gradle", f"wrapper --gradle-version {shlex.quote(version)} --no-daemon", run.user_home)
     print(f"{WRAPPER_LABEL} Install Gradle wrapper {version}", file=run.out)
     print(f"$ {command.shown}", file=run.out)
-    started = time.monotonic()
-    exit_code = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ), run.out_dir / INSTALL_LOG,
-                            run.out if run.show_output else None)
-    duration = time.monotonic() - started
+    exit_code, duration = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ),
+                                      run.out_dir / INSTALL_LOG, run.out if run.show_output else None)
+    line = f"exit={exit_code} in {duration:.1f}s -> {INSTALL_LOG}"
     if exit_code != 0:
-        print(f"{paint(ERROR, run.color)}: exit={exit_code} in {duration:.1f}s -> {INSTALL_LOG}", file=run.out)
+        run.error(line)
         if not run.show_output:
             _print_tail(run.out_dir / INSTALL_LOG, run.tail, run.out)
     else:
-        print(f"exit=0 in {duration:.1f}s -> {INSTALL_LOG}", file=run.out)
+        print(line, file=run.out)
     return {"version": version, "log": INSTALL_LOG, "exit_code": exit_code}
 
 
@@ -1879,12 +1880,13 @@ def opening_rule(label: str) -> str:
     return "-" * max(RULE_WIDTH - len(tail), 5) + tail
 
 
-def _run_logged(argv: list[str], cwd: Path, env: dict, log_path: Path, echo) -> int:
-    """Run argv, stdout and stderr together into log_path, and return the exit code.
+def _run_logged(argv: list[str], cwd: Path, env: dict, log_path: Path, echo) -> tuple[int, float]:
+    """Run argv, stdout and stderr together into log_path, and return the exit code and the seconds it took, to 0.1.
 
     With echo (a text stream), each line is also written there as it arrives, between two rules. When argv cannot
     start, the OSError is raised before any rule is written or log_path is made.
     """
+    started = time.monotonic()
     proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if echo is not None:
         echo.write(opening_rule(log_path.name) + "\n")
@@ -1901,7 +1903,7 @@ def _run_logged(argv: list[str], cwd: Path, env: dict, log_path: Path, echo) -> 
     if echo is not None:
         echo.write(("" if last.endswith(b"\n") else "\n") + "-" * RULE_WIDTH + "\n")
         echo.flush()
-    return proc.returncode
+    return proc.returncode, round(time.monotonic() - started, 1)
 
 
 def _print_tail(log: Path, n: int, out) -> None:
@@ -2340,12 +2342,18 @@ PROJECT_HELP = ("an existing project dir to use in place, as it is: the steps ru
                 "in it; relative to the working directory; takes precedence over setup.project; not with setup.layout")
 
 
+def _print_error(message: str) -> None:
+    """An `ERROR: <message>` line on stderr."""
+    print(f"{paint(ERROR, color_on(sys.stderr))}: {message}", file=sys.stderr)
+
+
 class Parser(argparse.ArgumentParser):
     """argparse, with a usage error ending in an ERROR: line, as every other error gust prints does."""
 
     def error(self, message: str):
         self.print_usage(sys.stderr)
-        self.exit(EXIT_ERROR, f"{paint(ERROR, color_on(sys.stderr))}: {message}\n")
+        _print_error(message)
+        self.exit(EXIT_ERROR)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2448,7 +2456,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return EXIT_OK
     if gradle_args and args.command != "run":
-        print(f"{paint(ERROR, color_on(sys.stderr))}: arguments after -- are accepted by run only ({args.command} runs no Gradle step)", file=sys.stderr)
+        _print_error(f"arguments after -- are accepted by run only ({args.command} runs no Gradle step)")
         return EXIT_ERROR
     if args.command == "help":
         if args.topic is None:
@@ -2489,7 +2497,7 @@ def main(argv: list[str] | None = None) -> int:
             print(summary.to_json())
         return {"success": EXIT_OK, "failure": EXIT_FAILURE}.get(summary.result, EXIT_ERROR)
     except (GustError, OSError) as e:
-        print(f"{paint(ERROR, color_on(sys.stderr))}: {e}", file=sys.stderr)
+        _print_error(str(e))
         return EXIT_ERROR
 
 
