@@ -454,9 +454,9 @@ stop-daemons have no result: line.
 On a terminal the words are colored, in the terminal's own palette: EXPECTED
 green, UNEXPECTED bold red, ERROR red (on stderr too), SUCCESS bold, FAILURE
 yellow. With NO_COLOR set, or TERM=dumb, the console is plain; with FORCE_COLOR
-set, it is colored through a pipe too. Logs, summary.json, and the --json line are always
-plain. FORCE_COLOR is passed on to the steps as well, so a shell step's log can
-get color codes from a tool that honors it.
+set, it is colored through a pipe too. Logs, summary.json, and the --json line
+are always plain. FORCE_COLOR is passed on to the steps as well, so a shell
+step's log can get color codes from a tool that honors it.
 
 With --json (run, check), the summary is printed as one JSON object on
 the last line of stdout; for run it is also in <out>/summary.json. Its keys
