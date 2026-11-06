@@ -1769,27 +1769,28 @@ def cannot_run(shown: str, e: OSError) -> str:
 def _change_files(run: Run, step: WriteStep | EditStep | DeleteStep, index: int) -> StepResult:
     """Apply a write, edit, delete, or clear step. A failure comes back as an error result, not an exception."""
     kind = step.kind
-    files = (list(step.files) if isinstance(step, WriteStep) else [step.dir] if isinstance(step, DeleteStep)
-             else list(dict.fromkeys(e.file for e in step.edits)))
     try:
         if isinstance(step, WriteStep):
+            files = list(step.files)
             for rel, content in step.files.items():
                 _write_file(run.project / rel, content)
-        elif isinstance(step, DeleteStep):
-            done = _delete_dir(run, step)
-            files = [] if done == "was not there" else files
-        else:
+            note = f"{len(files)} file{'s' if len(files) != 1 else ''} written"
+        elif isinstance(step, EditStep):
+            files = list(dict.fromkeys(e.file for e in step.edits))
             for edit in step.edits:
                 _apply_edit(run.project, edit)
+            note = f"{len(files)} file{'s' if len(files) != 1 else ''} edited"
+        else:
+            files = [step.dir]
+            done = _delete_dir(run, step)
+            files, note = ([] if done == "was not there" else files), f"{step.dir} {done}"
     except StepError as e:
         message = str(e)
     except OSError as e:
         rel = Path(e.filename).relative_to(run.project) if e.filename and Path(e.filename).is_relative_to(run.project) else e.filename
         message = f"cannot {kind} {rel}: {e.strerror}"
     else:
-        n = len(files)
-        print(f"{step.dir} {done}" if isinstance(step, DeleteStep)
-              else f"{n} file{'s' if n != 1 else ''} {'written' if kind == 'write' else 'edited'}", file=run.out)
+        print(note, file=run.out)
         return StepResult(index=index, kind=kind, name=step.label(), result="done", files=files)
     run.error(message)
     return StepResult(index=index, kind=kind, name=step.label(), result="error", files=files, error=message)
