@@ -2235,9 +2235,11 @@ def render_reproducer(scenario: Scenario, files: dict[str, bytes], gradle_versio
                     raise GustError(f"{where}.file: {edit.file!r} is left out of the zip with the wrapper, so it cannot be edited there")
                 try:
                     before = files[rel].decode("utf-8")
+                    after = _edited_text(before, edit)                 # as a run makes it
                 except UnicodeDecodeError:
                     raise GustError(f"{where}.file: {edit.file!r} is not UTF-8 text") from None
-                after = _edited(before, edit, where)
+                except StepError as e:
+                    raise GustError(f"{where}.replace: {e}") from None
                 body += _sh_edit(rel, before, after)
                 files[rel] = after.encode("utf-8")
         else:
@@ -2272,14 +2274,6 @@ def _expect_comments(expect: Expect) -> list[str]:
             first, *rest = _visible(text).split("\n")
             lines += [f"# {what}: {first}", *(f"#   {line}" for line in rest)]
     return lines
-
-
-def _edited(text: str, edit: Edit, where: str) -> str:
-    """The text after the edit, as a run makes it, with where (steps[i].edit[j]) in the message of a failure."""
-    try:
-        return _edited_text(text, edit)
-    except StepError as e:
-        raise GustError(f"{where}.replace: {e}") from None
 
 
 def _sh_write(rel: str, content: str) -> list[str]:
