@@ -851,16 +851,17 @@ def load_scenario(text: str, base_dir: Path | None = None, default_name: str | N
     scenario = Scenario(name=name, description=description, files=files, steps=steps, remote=remote, gradle=gradle,
                         project=project)
     if remote is None:
-        check_file_flow(scenario, lambda rel: project is not None and (project / rel).is_file())
+        check_file_flow(scenario)
     return scenario
 
 
-def check_file_flow(scenario: Scenario, exists) -> None:
+def check_file_flow(scenario: Scenario) -> None:
     """Check that every edit's file exists by then, that the path of every delete or clear is a directory, and that no
     path is both a file and a directory.
 
-    exists(rel) is whether the remote checkout or the project dir in place, if any, has that file.
+    The files on disk are those of the remote checkout, which must be fetched by then, or of the project dir in place.
     """
+    root = scenario.remote.source if scenario.remote else scenario.project
     files: dict[str, str] = {}   # path -> where it first appears
     dirs: dict[str, str] = {}    # known dir -> why it is one: a file under it and where that appears, or a delete or clear
     gone: list[tuple[str, ...]] = []           # the parts of each dir deleted or cleared so far
@@ -869,7 +870,7 @@ def check_file_flow(scenario: Scenario, exists) -> None:
     def seen(rel: str) -> bool:
         """Whether the checkout or the project dir in place has that file, and it is not under a dir deleted or cleared
         by then."""
-        return exists(rel) and not any(Path(rel).parts[:len(g)] == g for g in gone)
+        return root is not None and (root / rel).is_file() and not any(Path(rel).parts[:len(g)] == g for g in gone)
 
     def add(path: str, where: str) -> None:
         if path in dirs:
@@ -1232,7 +1233,7 @@ def fetch_remote(scenario: Scenario, out=None) -> dict | None:
             rmtree(target, ignore_errors=True)
             raise
         fetched = True
-    check_file_flow(scenario, lambda rel: (remote.source / rel).is_file())
+    check_file_flow(scenario)
     return {"link": remote.link, "checkout": str(target), "fetched": fetched}
 
 
@@ -2543,7 +2544,7 @@ def _cli_check(scenario: Scenario, gradle: str | None, user_home: Path, as_json:
         cached = (remote.dir / ".git").exists()
         if cached:
             root = remote.source
-            check_file_flow(scenario, lambda rel: (remote.source / rel).is_file())
+            check_file_flow(scenario)
             print(f"remote:   {remote.link}\ncheckout: {remote.dir} (cached)")
         else:
             print(f"remote:   {remote.link} (not cached; fetched on run)")
