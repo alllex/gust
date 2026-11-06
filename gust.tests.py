@@ -2317,6 +2317,12 @@ class ColorTest(GustCase):
             self.assertFalse(gs.color_on(Tty()))                                         # no console handle behind it
             with open(os.devnull, "w") as nul:                                           # NUL, a tty to Windows, but no console
                 self.assertFalse(gs.color_on(nul))
+            for vt, env, want, calls in [(True, {}, True, 1), (False, {}, False, 1), (True, {"TERM": "dumb"}, False, 0),
+                                         (False, {"FORCE_COLOR": "1"}, True, 1)]:
+                enable_vt = unittest.mock.Mock(return_value=vt)
+                with unittest.mock.patch.object(gs, "_enable_vt", enable_vt), unittest.mock.patch.dict(os.environ, env):
+                    self.assertEqual(gs.color_on(Tty()), want, (vt, env))
+                self.assertEqual(enable_vt.call_count, calls, (vt, env))                 # the console mode is left alone for TERM=dumb
 
     def test_each_word_alone_is_colored(self):
         for word, sgr in [(gs.EXPECTED, "32"), (gs.UNEXPECTED, "1;31"), ("SUCCESS", "1"), ("FAILURE", "33"), (gs.ERROR, "31")]:

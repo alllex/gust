@@ -204,7 +204,8 @@ only, and there it is present whenever the header was printed.
 On a terminal, the console's verdict words are colored in the terminal's own
 palette: `EXPECTED` green, `UNEXPECTED` bold red, `ERROR` red, `SUCCESS` bold,
 `FAILURE` yellow. Set [`NO_COLOR`](https://no-color.org) for a plain console,
-or `FORCE_COLOR` for color through a pipe. Logs and `summary.json` stay plain.
+or `FORCE_COLOR` for color through a pipe; the steps get `FORCE_COLOR` in
+their environment too. Logs and `summary.json` stay plain.
 
 ## Install
 

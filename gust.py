@@ -1514,7 +1514,7 @@ class Run:
     trace: bool = False
     gradle_args: list[str] = field(default_factory=list)
     choice: GradleChoice | None = None
-    color: bool = False          # whether the words on out are colored; settled from out in __post_init__
+    color: bool = field(init=False, default=False)   # whether the words on out are colored; settled from out
 
     def __post_init__(self) -> None:
         if self.out is None:
@@ -1745,9 +1745,11 @@ def color_on(out) -> bool:
     terminal whose TERM is not dumb. On Windows the console needs VT processing, turned on here; NUL has no console."""
     if os.environ.get("NO_COLOR"):
         return False
+    force = bool(os.environ.get("FORCE_COLOR"))
+    if not force and os.environ.get("TERM") == "dumb":
+        return False                                   # decided before the console mode is touched
     tty = getattr(out, "isatty", lambda: False)()
-    vt = tty and (not WINDOWS or _enable_vt(out))
-    return bool(os.environ.get("FORCE_COLOR")) or (vt and os.environ.get("TERM") != "dumb")
+    return bool(tty and (not WINDOWS or _enable_vt(out))) or force
 
 
 def _enable_vt(out) -> bool:
