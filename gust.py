@@ -47,7 +47,9 @@ EXIT_ERROR = 2       # error: bad input, a step that could not be carried out, o
 # --- the console's verdict words, each printed as its own token, ahead of ": " or " ("
 EXPECTED = "EXPECTED"        # a run step whose every check came out as expected
 UNEXPECTED = "UNEXPECTED"    # a run step with a check that came out unexpected
-ERROR = "ERROR"              # something gust could not do
+ERROR = "ERROR"              # something gust could not do; also the run's result: ERROR
+SUCCESS = "SUCCESS"          # the run's result: every check came out as expected
+FAILURE = "FAILURE"          # the run's result: a check came out unexpected
 
 # --- the out dir and the .gust cache
 MARKER = ".gust-run"            # marks an out dir as made by gust, so it may be removed and recreated
@@ -411,7 +413,7 @@ Console
 Once the preconditions pass, a header is printed: scenario:, out:, project:
 (in place only), home:, gradle:. With a remote, the remote: and checkout: lines
 come first, while the checkout is fetched or found in the cache. Then come
-blocks, each a label line and an outcome line:
+blocks, each a label line and a result line:
 
   [WRP] Install Gradle wrapper 9.7.1     a `$ <command>` line, the wrapper task's output with
                                          --show-output, then `exit=0 in 3.1s -> install-wrapper.log`.
@@ -476,13 +478,13 @@ properties right after the home pair:
 The step's build operations, one JSON object per line, end up in
 <out>/step-NN-ops-log.txt (Gradle 4.0 and newer). With Gradle 8.10 and older,
 step-NN-ops-tree.json and step-NN-ops-tree.txt appear next to it too. Once the
-file exists, its name follows the log's on the outcome line (`-> step-01.log,
+file exists, its name follows the log's on the result line (`-> step-01.log,
 step-01-ops-log.txt`) and is the step's trace in the summary. Shell steps are
 not traced; put the property in the step's command to trace one.
 --tail N is how many log lines are shown after an unexpected check or a failed
 wrapper install (default 30).
 With --show-output, each run step's output appears on the console as it runs,
-untouched, between the step line and its outcome line, inside the rule lines.
+untouched, between the step line and its result line, inside the rule lines.
 step-NN.log is written either way, and no tail follows an unexpected check.
 The daemon stops are never shown; the install block is.
 -- GRADLE_ARGS ... (run): everything after a literal -- is appended
@@ -1614,7 +1616,7 @@ def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
         if stop_daemons:
             summary.stop_daemons["after"] = _stop_daemons(run, "[AFT]", "stop-daemons-after.log", full=False)
     (run.out_dir / "summary.json").write_text(summary.to_json() + "\n", encoding="utf-8", newline="")
-    word = summary.result.upper()
+    word = {"success": SUCCESS, "failure": FAILURE, "error": ERROR}[summary.result]
     print(f"result: {word} ({len(summary.steps)}/{len(steps)} steps ran)", file=run.out)
     print_out(run)
     return summary
@@ -1646,7 +1648,7 @@ def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
         checks=checks, exit_code=exit_code, duration_s=round(duration, 1), log=log_rel,
         trace=trace_rel if traced else None, command=shown,
     )
-    n = len(checks) - 1                                            # the output checks, past the exit check
+    n = len(step.expect.output) + len(step.expect.no_output)       # the output checks
     checks_note = f", {n} output check{'s' if n != 1 else ''}" if n else ""
     word = UNEXPECTED if unexpected else EXPECTED
     print(f"{word}: exit={exit_code}{checks_note} in {duration:.1f}s -> {log_rel}" + (f", {trace_rel}" if traced else ""),
