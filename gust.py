@@ -452,9 +452,9 @@ line is `ERROR: exit=N ...`, followed by result: ERROR. On success, check and
 stop-daemons have no result: line.
 
 On a terminal the words are colored, in the terminal's own palette: EXPECTED
-green, UNEXPECTED bold red, ERROR red, SUCCESS bold, FAILURE yellow. With
-NO_COLOR set, or TERM=dumb, the console is plain; with FORCE_COLOR set, it is
-colored through a pipe too. Logs, summary.json, and the --json line are always
+green, UNEXPECTED bold red, ERROR red (on stderr too), SUCCESS bold, FAILURE
+yellow. With NO_COLOR set, or TERM=dumb, the console is plain; with FORCE_COLOR
+set, it is colored through a pipe too. Logs, summary.json, and the --json line are always
 plain. FORCE_COLOR is passed on to the steps as well, so a shell step's log can
 get color codes from a tool that honors it.
 
@@ -1985,7 +1985,7 @@ class Parser(argparse.ArgumentParser):
 
     def error(self, message: str):
         self.print_usage(sys.stderr)
-        self.exit(EXIT_ERROR, f"{ERROR}: {message}\n")
+        self.exit(EXIT_ERROR, f"{paint(ERROR, color_on(sys.stderr))}: {message}\n")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2076,7 +2076,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return EXIT_OK
     if gradle_args and args.command != "run":
-        print(f"{ERROR}: arguments after -- are accepted by run only ({args.command} runs no Gradle step)", file=sys.stderr)
+        print(f"{paint(ERROR, color_on(sys.stderr))}: arguments after -- are accepted by run only ({args.command} runs no Gradle step)", file=sys.stderr)
         return EXIT_ERROR
     if args.command == "help":
         if args.topic is None:
@@ -2115,7 +2115,7 @@ def main(argv: list[str] | None = None) -> int:
             print(summary.to_json())
         return {"success": EXIT_OK, "failure": EXIT_FAILURE}.get(summary.result, EXIT_ERROR)
     except (GustError, OSError) as e:
-        print(f"{ERROR}: {e}", file=sys.stderr)
+        print(f"{paint(ERROR, color_on(sys.stderr))}: {e}", file=sys.stderr)
         return EXIT_ERROR
 
 

@@ -2367,6 +2367,20 @@ class ColorTest(GustCase):
                 if f.is_file():
                     self.assertNotIn(b"\x1b", f.read_bytes(), f)
 
+    def test_stderr_error_colored(self):
+        del os.environ["NO_COLOR"]
+        s = self.scenario_file('[[steps]]\nrun.shell = "true"\n')
+        for env, word in [({"FORCE_COLOR": "1"}, gs.paint(gs.ERROR, True)), ({"FORCE_COLOR": "1", "NO_COLOR": "1"}, gs.ERROR), ({}, gs.ERROR)]:
+            with unittest.mock.patch.dict(os.environ, env):
+                _, _, err = self.cli("run", "missing.toml")                              # a precondition
+                self.assertTrue(err.startswith(f"{word}: "), (env, err))
+                _, _, err = self.cli("check", str(s), "--", "-q")                        # arguments after --
+                self.assertEqual(err, f"{word}: arguments after -- are accepted by run only (check runs no Gradle step)\n", env)
+                usage = io.StringIO()                                                    # an argparse usage error
+                with contextlib.redirect_stderr(usage), self.assertRaises(SystemExit):
+                    gs.main(["run", str(s), "--tail", "x"])
+                self.assertIn(f"\n{word}: argument --tail", usage.getvalue(), env)
+
 
 class VersionGateTest(unittest.TestCase):
     def test_gate_precedes_every_version_dependent_import(self):
