@@ -2688,6 +2688,80 @@ class SpecTest(unittest.TestCase):
             self.assertIn(command, gs.FORMAT_SPEC, command)
 
 
+class Tty(io.StringIO):
+    def isatty(self):
+        return True
+
+
+class ColorTest(GustCase):
+    """When the console words are colored, how, and that the out dir and the JSON stay plain."""
+
+    def test_color_on(self):
+        del os.environ["NO_COLOR"]
+        os.environ.pop("TERM", None)
+        for env, stream, want in [({}, io.StringIO(), False), ({}, Tty(), True), ({"TERM": "dumb"}, Tty(), False),
+                                  ({"NO_COLOR": "1"}, Tty(), False), ({"FORCE_COLOR": "1"}, io.StringIO(), True),
+                                  ({"FORCE_COLOR": "1", "TERM": "dumb"}, Tty(), True),
+                                  ({"NO_COLOR": "1", "FORCE_COLOR": "1"}, Tty(), False), ({"NO_COLOR": ""}, Tty(), True)]:
+            with mock.patch.dict(os.environ, env), mock.patch.object(gs, "WINDOWS", False):   # Tty has no console
+                self.assertEqual(gs.color_on(stream), want, env)
+        with mock.patch.object(gs, "WINDOWS", True):
+            self.assertFalse(gs.color_on(Tty()))                                         # no console handle behind it
+            with open(os.devnull, "w") as nul:                                           # NUL, a tty to Windows, but no console
+                self.assertFalse(gs.color_on(nul))
+            for vt, env, want, calls in [(True, {}, True, 1), (False, {}, False, 1), (True, {"TERM": "dumb"}, False, 0),
+                                         (False, {"FORCE_COLOR": "1"}, True, 1)]:
+                enable_vt = mock.Mock(return_value=vt)
+                with mock.patch.object(gs, "_enable_vt", enable_vt), mock.patch.dict(os.environ, env):
+                    self.assertEqual(gs.color_on(Tty()), want, (vt, env))
+                self.assertEqual(enable_vt.call_count, calls, (vt, env))                 # the console mode is left alone for TERM=dumb
+
+    def test_each_word_alone_is_colored(self):
+        for word, sgr in [(gs.EXPECTED, "32"), (gs.UNEXPECTED, "1;31"), ("SUCCESS", "1"), ("FAILURE", "33"), (gs.ERROR, "31")]:
+            self.assertEqual(gs.paint(word, True), f"\x1b[{sgr}m{word}\x1b[0m")
+            self.assertEqual(gs.paint(word, False), word)
+
+    def test_console_colored_files_and_json_plain(self):
+        del os.environ["NO_COLOR"]
+        os.environ["FORCE_COLOR"] = "1"                                                  # through cli's StringIO, a pipe in effect
+        on = {word: gs.paint(word, True) for word in gs.STYLES}
+        for name, text, lines in [
+            ("pass", '[[steps]]\nrun.shell = "true"\n', [f"{on['EXPECTED']}: exit=0", f"result: {on['SUCCESS']} (1/1"]),
+            ("fail", '[[steps]]\nrun.shell = "true"\n[[steps]]\nrun.shell = "false"\n',
+             [f"{on['EXPECTED']}: exit=0", f"{on['UNEXPECTED']}: exit=1", f"result: {on['FAILURE']} (2/2"]),
+            ("err", '[setup.layout.project]\n"f.txt" = "aa"\n[[steps]]\n[[steps.edit]]\nfile = "f.txt"\nreplace = "a"\nwith = "b"\n',
+             [f"{on['ERROR']}: 'a' occurs", f"result: {on['ERROR']} (1/1"]),
+        ]:
+            _, out, _ = self.cli("run", str(self.scenario_file(text, f"{name}.toml")), "--keep-daemons", "--json")
+            for line in lines:
+                self.assertIn(line, out, name)
+            self.assertEqual(out.count("\x1b["), 2 * len(lines), name)                   # the words, and nothing else
+            self.assertNotIn("\x1b", out.rstrip("\n").splitlines()[-1], name)            # the --json line
+            for f in (self.tmp / f"{name}.out").rglob("*"):
+                if f.is_file():
+                    self.assertNotIn(b"\x1b", f.read_bytes(), f)
+
+    def test_stderr_error_colored(self):
+        del os.environ["NO_COLOR"]
+        s = self.scenario_file('[[steps]]\nrun.shell = "true"\n')
+        for env, word in [({"FORCE_COLOR": "1"}, gs.paint(gs.ERROR, True)), ({"FORCE_COLOR": "1", "NO_COLOR": "1"}, gs.ERROR), ({}, gs.ERROR)]:
+            with mock.patch.dict(os.environ, env):
+                _, _, err = self.cli("run", "missing.toml")                              # a precondition
+                self.assertTrue(err.startswith(f"{word}: "), (env, err))
+                _, _, err = self.cli("check", str(s), "--", "-q")                        # arguments after --
+                self.assertEqual(err, f"{word}: arguments after -- are accepted by run only (check runs no Gradle step)\n", env)
+                usage = io.StringIO()                                                    # an argparse usage error
+                with contextlib.redirect_stderr(usage), self.assertRaises(SystemExit):
+                    gs.main(["run", str(s), "--tail", "x"])
+                self.assertIn(f"\n{word}: argument --tail", usage.getvalue(), env)
+                code, out, err = self.cli("zip", str(s), "--gradle", "bin/gradle")         # zip's error, through main
+                self.assertEqual((code, out), (gs.EXIT_ERROR, ""), env)
+                self.assertTrue(err.startswith(f"{word}: --gradle "), (env, err))
+        with mock.patch.dict(os.environ, {"FORCE_COLOR": "1"}):
+            code, out, _ = self.cli("zip", str(s), "-o", str(self.tmp / "r.zip"))
+        self.assertEqual((code, out), (gs.EXIT_OK, f"{self.tmp / 'r.zip'}\n"))                   # the zip's path stays plain
+
+
 class VersionGateTest(unittest.TestCase):
     def test_gate_precedes_every_version_dependent_import(self):
         source = Path(gs.__file__).read_text(encoding="utf-8").splitlines()
