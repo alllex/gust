@@ -1235,15 +1235,30 @@ run.shell = "touch should-not-exist"
             gone, gradle = 'run.shell = \'rm -f "$GRADLE"\'\n[[steps]]\nrun.gradle = "help"', str(self.script("goner", GECHO))
         else:            # through sh, a gone binary is exit 127, but a gone project dir fails to start
             gone, gradle = 'run.shell = "cd .. && rm -rf project"\n[[steps]]\nrun.shell = "true"', "gecho"
-        summary = self.run_text(f'name = "gone"\n[[steps]]\n{gone}\n[[steps]]\nrun.shell = "true"\n', gradle=gradle)
+        text = f'name = "gone"\n[[steps]]\n{gone}\n[[steps]]\nrun.shell = "true"\n'
+        summary = self.run_text(text, gradle=gradle, stop_daemons=True)
         self.assertEqual((summary.result, len(summary.steps)), ("error", 2), self.out.getvalue())
         step = summary.steps[1]
-        self.assertEqual((step.result, step.checks), ("error", None))
+        self.assertEqual((step.result, step.checks, step.exit_code, step.log), ("error", None, None, None))
         self.assertTrue(step.error.startswith(f"cannot run {step.command}: "), step.error)
         self.assertEqual(summary.error, step.error)
+        self.assertFalse((self.out_dir / "step-02.log").exists())                       # no log for a step that never started
+        after = summary.stop_daemons["after"]                                           # the stop after it cannot start either
+        self.assertEqual(list(after), ["error"])
         printed = self.out.getvalue()
-        self.assertIn(f"\n$ {step.command}\nERROR: {step.error}\nresult: ERROR (2/3 steps ran)\n", printed)
-        self.assertEqual(json.loads((self.out_dir / "summary.json").read_text())["error"], step.error)
+        self.assertIn(f"\n$ {step.command}\nERROR: {step.error}\n[AFT] Stop Gradle daemons -> stop-daemons-after.log\n"
+                      f"ERROR: {after['error']}\nresult: ERROR (2/3 steps ran)\nout:      {self.out_dir}\n", printed)
+        on_disk = json.loads((self.out_dir / "summary.json").read_text())
+        self.assertEqual((on_disk["error"], on_disk["stop_daemons"]["after"]), (step.error, after))
+        # with --show-output: no rule is opened for a step that never started
+        self.out = io.StringIO()
+        if gs.WINDOWS:
+            gradle = str(self.script("goner", GECHO))
+        summary = self.run_scenario(gs.load_scenario(text), self.tmp / "so.out", gradle=gradle, show_output=True)
+        printed = self.out.getvalue()
+        self.assertEqual(summary.result, "error", printed)
+        self.assertNotIn(gs.opening_rule("step-02.log"), printed)
+        self.assertIn(f"\n$ {summary.steps[1].command}\nERROR: ", printed)
 
     def test_write_onto_a_directory_is_a_step_error(self):
         summary = self.run_text("""

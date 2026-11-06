@@ -459,15 +459,19 @@ in lower case, all under the key `result`:
                          holds the message: the step's, or `wrapper install failed: exit=N
                          -> install-wrapper.log`
   steps[].result         a run step: "expected", "unexpected", or "error"; any other step:
-                         "done" or "error", with the message as the step's `error`
+                         "done" or "error". Every step with "error" has the message as its
+                         `error`, run steps included
   steps[].checks         a run step's checks, every one, in the order exit, output, no_output:
                            {"check": "exit", "expect": "fail", "got": "pass", "result": "unexpected"}
                            {"check": "output", "text": "BUILD FAILED", "result": "unexpected"}
                            {"check": "no_output", "text": "deprecated", "result": "expected"}
                          with result "expected" or "unexpected"
 
-A run step also has its exit_code, duration_s, log, and command; the daemon
-stops have neither a result nor checks.
+A run step also has its exit_code, duration_s, log, and command; one that could
+not start (its project dir gone, say) has only its command and error: no
+exit_code, duration_s, log, or checks. The daemon stops have neither a result
+nor checks: each is {exit_code, duration_s, log}, or {error} for a stop that
+could not start, which never changes the result.
 With --keep-daemons (run), both daemon stops are left out.
 With --trace (run), each run.gradle step runs with Gradle's internal trace
 properties right after the home pair:
@@ -1481,7 +1485,7 @@ class RunSummary:
     result: str = "success"      # "success" | "failure" | "error", as on the console's result: line
     error: str | None = None     # with result "error": the step's message, or the failed install's
     steps: list[StepResult] = field(default_factory=list)
-    stop_daemons: dict | None = None   # {"before", "after"}, each {"exit_code", "duration_s", "log"}
+    stop_daemons: dict | None = None   # {"before", "after"}, each {"exit_code", "duration_s", "log"}, or {"error"}
 
     def to_json(self) -> str:
         """The summary as one JSON line, fields in declaration order, without empty optional ones."""
@@ -1635,7 +1639,7 @@ def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
     try:
         exit_code = _run_logged(argv, run.project, run.env, run.out_dir / log_rel, run.out if run.show_output else None)
     except OSError as e:                                           # the project dir or the binary is gone, say
-        message = f"cannot run {shown}: {e.strerror or e}" + (f": {e.filename}" if e.filename else "")
+        message = cannot_run(shown, e)
         print(f"{ERROR}: {message}", file=run.out)
         return StepResult(index=index, kind=step.kind, name=step.label(), result="error", command=shown, error=message)
     duration = time.monotonic() - started
@@ -1656,6 +1660,11 @@ def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
     for check in unexpected:
         print(f"  {describe_check(check)}", file=run.out)
     return result
+
+
+def cannot_run(shown: str, e: OSError) -> str:
+    """The message for a command that could not start."""
+    return f"cannot run {shown}: {e.strerror or e}" + (f": {e.filename}" if e.filename else "")
 
 
 def _change_files(run: Run, step: WriteStep | EditStep | DeleteStep, index: int) -> StepResult:
@@ -1699,7 +1708,12 @@ def _stop_daemons(run: Run, label: str, log_name: str, full: bool) -> dict:
     if full:
         print(f"$ {command.shown}", file=run.out)
     started = time.monotonic()
-    exit_code = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ), run.out_dir / log_name, None)
+    try:
+        exit_code = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ), run.out_dir / log_name, None)
+    except OSError as e:                                           # the project dir is gone, say: a failed stop, no log
+        message = cannot_run(command.shown, e)
+        print(f"{ERROR}: {message}", file=run.out)
+        return {"error": message}
     duration = time.monotonic() - started
     if exit_code != 0:
         print(f"{ERROR}: exit={exit_code} in {duration:.1f}s -> {log_name}", file=run.out)
@@ -1743,14 +1757,15 @@ def opening_rule(label: str) -> str:
 def _run_logged(argv: list[str], cwd: Path, env: dict, log_path: Path, echo) -> int:
     """Run argv, stdout and stderr together into log_path, and return the exit code.
 
-    With echo (a text stream), each line is also written there as it arrives, between two rules.
+    With echo (a text stream), each line is also written there as it arrives, between two rules. When argv cannot
+    start, the OSError is raised before any rule is written or log_path is made.
     """
+    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if echo is not None:
         echo.write(opening_rule(log_path.name) + "\n")
         echo.flush()
     last = b"\n"
-    with open(log_path, "wb") as log, subprocess.Popen(
-            argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as proc:
+    with open(log_path, "wb") as log, proc:
         for line in iter(proc.stdout.readline, b""):
             log.write(line)
             last = line
@@ -2133,7 +2148,7 @@ def _cli_stop_daemons(run: Run, ref: str) -> int:
     if in_place and not (run.out_dir / MARKER).is_file():
         prepare_out(run.out_dir)                       # an out dir for the log; without the marker there is nothing to remove
     print_header(run.scenario, run.out_dir, run.user_home, run.choice, run.out)
-    stopped = _stop_daemons(run, "[STOP]", "stop-daemons.log", full=True)["exit_code"] == 0
+    stopped = _stop_daemons(run, "[STOP]", "stop-daemons.log", full=True).get("exit_code") == 0
     if not stopped:
         print(f"result: {ERROR}", file=run.out)
     print_out(run)
