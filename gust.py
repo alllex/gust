@@ -26,6 +26,7 @@ import difflib
 import functools
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -525,8 +526,10 @@ path is the only line on stdout.
   - Nothing runs: no Gradle, no wrapper install, and no Gradle user home. A
     remote is fetched into .gust/remotes if it is not cached yet.
   - --gradle is a version only, for REPRODUCER.md. Without it, the version
-    is setup.gradle's, or with setup.gradle = "wrapper" the one in the
-    wrapper's distributionUrl. With neither, no version is named.
+    is setup.gradle's, or the one in the wrapper's distributionUrl when the
+    steps run with the project's own wrapper: with setup.gradle = "wrapper",
+    or without setup.gradle when the project's gradlew is executable in its
+    commit. Otherwise no version is named.
 
 REPRODUCER.md has the scenario's name as its title, the description, a
 `Needs Gradle <version>, as gradle on PATH.` line, and then each step under
@@ -535,15 +538,16 @@ a `### N. <step name>` heading with its own sh block:
   run.gradle      `gradle <args>`, after comments for the expectations:
                   `# expected to fail`, `# expected in the output: ...`,
                   `# not expected in the output: ...`
-  run.shell       the command, with ./gradlew read as gradle; when $GRADLE or
-                  $GRADLE_ARGS is used, they are set in a block before the steps
+  run.shell       the command, with ./gradlew and ../gradlew read as gradle; when
+                  $GRADLE or $GRADLE_ARGS is used, they are set in a block
+                  before the steps
   write           a `cat > <file> <<'EOF'` heredoc (EOF2, EOF3, ... when a line
                   of the file is EOF), with `mkdir -p` for a new directory. A file
                   without a final newline, or with a carriage return or other
                   control character, is written with printf
   edit            a unified diff in a `patch -p1` heredoc; for a file with a
-                  carriage return or a space in its path, the whole file as
-                  for write
+                  carriage return or whitespace in its path, the whole file as
+                  for write, with its line ends kept
   delete, clear   `rm -rf <dir>`, and for clear `mkdir <dir>` after it
 
 For the same scenario, REPRODUCER.md is the same, byte for byte, on every
@@ -553,10 +557,18 @@ files come from the commit's own objects, whatever line ends the checkout has;
 and the entries are sorted, all dated 1980-01-01, with mode 755 for an
 executable file and 644 for any other.
 
-Any failure is one `ERROR: ...` line on stderr, exit code 2, and no zip: a zip
-that exists already (it is never replaced), setup.project (nothing to lay
-out), a binary for --gradle, an edit that cannot be applied, or an edit of a
-wrapper file. The project is staged in a temp dir that is removed either way.
+Any failure is one `ERROR: ...` line on stderr, exit code 2, and no zip. These
+are refused:
+  - a zip that exists already (it is never replaced), or whose name minus .zip
+    is no name of the form [A-Za-z0-9][A-Za-z0-9._-]*, as the top folder
+  - setup.project, with nothing to lay out, and a binary for --gradle
+  - an edit that cannot be applied, and an edit of a wrapper file
+  - a shell step that uses the wrapper once ./gradlew is read as gradle, such
+    as `test -x gradlew` or a path under gradle/wrapper
+  - a symbolic link in the remote commit that is absolute or leads out of the
+    project
+The zip is made from the files in memory, never from a copy on disk, so two
+names that differ in case only stay two files on every system.
 
 Windows
 =======
@@ -1932,7 +1944,8 @@ FILE_MODE, EXEC_MODE, LINK_MODE, DIR_MODE = 0o100644, 0o100755, 0o120777, 0o4075
 WRAPPER_FILES = ("gradlew", "gradlew.bat")   # left out of a zip, together with everything under gradle/wrapper/
 WRAPPER_DIR = "gradle/wrapper/"
 _DISTRIBUTION_RE = re.compile(r"gradle-([0-9][\w.+-]*?)-(?:bin|all)\.zip")   # the version in a wrapper's distributionUrl
-_GRADLEW_RE = re.compile(r"(?<![\w./-])\./gradlew(?:\.bat)?(?![\w.-])")      # ./gradlew in a shell command
+_GRADLEW_RE = re.compile(r"(?<![\w./-])(?:\.\.?/)+gradlew(?:\.bat)?(?![\w.-])")   # ./gradlew or ../gradlew in a shell command
+_WRAPPER_USE_RE = re.compile(r"(?<![\w./-])gradlew(?:\.bat)?(?![\w-])|gradle[/\\]wrapper")   # what is left of the wrapper then
 _GRADLE_VAR_RE = re.compile(r"\$\{?GRADLE(?:_ARGS)?(?![A-Za-z0-9_])")         # $GRADLE or $GRADLE_ARGS, not $GRADLE_USER_HOME
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")                        # control characters other than tab and newline
 
@@ -1941,12 +1954,16 @@ def zip_scenario(scenario: Scenario, target: Path, gradle_version: str | None = 
     """Write the project's starting state, as setup lays it out but without the wrapper, plus a REPRODUCER.md with
     the steps, into a new zip at target, under one folder named after the zip's stem. No Gradle runs.
 
-    The project is staged in a temp dir that is always removed, and after a failure no zip is left behind.
-    gradle_version is for the REPRODUCER.md; by default it comes from the scenario. For the same scenario the bytes
-    are the same.
+    The zip is made from the files in memory, so no name is changed by the file system on the way. After a failure
+    no zip is left behind. gradle_version is for the REPRODUCER.md; by default it comes from the scenario. For the
+    same scenario the bytes are the same.
     """
     if scenario.project is not None:
         raise GustError(f"nothing to zip: the project {scenario.project} is used in place, as it is")
+    top = target.name.removesuffix(".zip") if target.name != ".zip" else ""
+    if not NAME_RE.fullmatch(top) or top in (".", ".."):
+        raise GustError(f"the zip's top folder would be {top!r}, after the zip's name {target.name!r}; "
+                        f"pass -o with a name that matches {NAME_RE.pattern}, such as repro.zip")
     if target.exists() or target.is_symlink():
         raise GustError(f"{target} exists")
     if not target.parent.is_dir():
@@ -1959,16 +1976,7 @@ def zip_scenario(scenario: Scenario, target: Path, gradle_version: str | None = 
         raise GustError(f"the project has a {REPRODUCER} of its own, where the zip's {REPRODUCER} goes")
     readme = render_reproducer(scenario, {rel: data for rel, (_, data) in files.items()}, version)
     files[REPRODUCER] = (FILE_MODE, readme.encode("utf-8"))
-    staging = Path(tempfile.mkdtemp(prefix="gust-zip."))
-    try:
-        top = target.stem
-        for rel, (mode, data) in files.items():              # a link is staged as a file that holds its target
-            path = staging / top / rel
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(data)
-        _write_zip(target, staging, top, {rel: mode for rel, (mode, _) in files.items()})
-    finally:
-        rmtree(staging, ignore_errors=True)
+    _write_zip(target, top, files)
 
 
 def project_files(scenario: Scenario) -> dict[str, tuple[int, bytes]]:
@@ -1984,13 +1992,21 @@ def project_files(scenario: Scenario) -> dict[str, tuple[int, bytes]]:
 
 def _remote_files(remote: Remote) -> dict[str, tuple[int, bytes]]:
     """The files of the fetched remote commit, or of its subdirectory, read from git's objects rather than the
-    checkout, so the bytes and modes are the commit's own on every machine, whatever line ends or file modes the
-    checkout has. A symbolic link's bytes are its target. Submodules are left out."""
-    listing = _git(remote.dir, "ls-tree", "-r", "-z", f"HEAD:{remote.subdir}" if remote.subdir else "HEAD")
+    checkout, so the names, bytes, and modes are the commit's own on every machine, whatever line ends, file modes,
+    or name case the checkout has. A symbolic link's bytes are its target, which must stay inside the project.
+    Submodules are left out."""
+    tree = f"HEAD:{remote.subdir}" if remote.subdir else "HEAD"
+    listing = subprocess.run(["git", "ls-tree", "-r", "-z", tree], cwd=remote.dir, capture_output=True)
+    if listing.returncode != 0:
+        raise GustError(f"git ls-tree failed in {remote.dir}: {listing.stderr.decode(errors='replace').strip()}")
     blobs = []
-    for record in filter(None, listing.split("\0")):
-        meta, _, rel = record.partition("\t")
-        mode, kind, sha = meta.split()
+    for record in filter(None, listing.stdout.split(b"\0")):
+        meta, _, name = record.partition(b"\t")
+        mode, kind, sha = meta.decode().split()
+        try:
+            rel = name.decode("utf-8")
+        except UnicodeDecodeError:
+            raise GustError(f"setup.layout.remote: the name {name!r} is not UTF-8") from None
         if kind == "blob":
             blobs.append((rel, {"100755": EXEC_MODE, "120000": LINK_MODE}.get(mode, FILE_MODE), sha))
     proc = subprocess.run(["git", "cat-file", "--batch"], cwd=remote.dir, capture_output=True,
@@ -2003,7 +2019,17 @@ def _remote_files(remote: Remote) -> dict[str, tuple[int, bytes]]:
         size = int(data[pos:start].split()[2])
         files[rel] = (mode, data[start:start + size])
         pos = start + size + 1
+        if mode == LINK_MODE:
+            _check_link(rel, files[rel][1])
     return files
+
+
+def _check_link(rel: str, target: bytes) -> None:
+    """Refuse a symbolic link that is absolute or leads out of the project, which would be one in the zip too."""
+    to = target.decode("utf-8", errors="replace")
+    inside = posixpath.normpath(posixpath.join(posixpath.dirname(rel), to.replace("\\", "/")))
+    if posixpath.isabs(to) or PureWindowsPath(to).anchor or inside == ".." or inside.startswith("../"):
+        raise GustError(f"setup.layout.remote: the link {rel!r} points to {to!r}, outside the project")
 
 
 def _is_wrapper(rel: str) -> bool:
@@ -2011,24 +2037,29 @@ def _is_wrapper(rel: str) -> bool:
 
 
 def _scenario_gradle_version(scenario: Scenario, files: dict[str, tuple[int, bytes]]) -> str | None:
-    """setup.gradle's version, or with "wrapper" the one in the wrapper's distributionUrl; None when there is none."""
-    if scenario.gradle != "wrapper":
+    """The Gradle version the steps run with: setup.gradle's, else that of the wrapper's distributionUrl, when the
+    wrapper is what runs: with setup.gradle = "wrapper", or without setup.gradle when the project's gradlew is
+    executable. None when it is neither."""
+    if scenario.gradle not in (None, "wrapper"):
         return scenario.gradle
+    if scenario.gradle is None and files.get("gradlew", (FILE_MODE,))[0] != EXEC_MODE:
+        return None                                           # gradle from PATH, of any version
     props = files.get(WRAPPER_DIR + "gradle-wrapper.properties")
     m = _DISTRIBUTION_RE.search(props[1].decode("utf-8", errors="replace")) if props else None
     return m.group(1) if m else None
 
 
-def _write_zip(target: Path, root: Path, top: str, modes: dict[str, int]) -> None:
-    """Zip root/top into a new file at target: entries sorted, each dated ZIP_DATE, with Unix modes (executable or
-    not, or a link). The file is created only if it is not there yet, and removed again if anything fails."""
-    dirs = {top} | {"/".join([top, *Path(rel).parts[:k]]) for rel in modes for k in range(1, len(Path(rel).parts))}
-    entries = sorted([(d + "/", DIR_MODE) for d in dirs] + [(f"{top}/{rel}", mode) for rel, mode in modes.items()])
+def _write_zip(target: Path, top: str, files: dict[str, tuple[int, bytes]]) -> None:
+    """Zip the files under top/ into a new file at target: entries sorted, each dated ZIP_DATE, with Unix modes
+    (executable or not, or a link). The file is created only if it is not there yet, and removed again if anything
+    fails."""
+    dirs = {top} | {"/".join([top, *rel.split("/")[:k]]) for rel in files for k in range(1, rel.count("/") + 1)}
+    entries = sorted([(d + "/", DIR_MODE, b"") for d in dirs] + [(f"{top}/{rel}", mode, data) for rel, (mode, data) in files.items()])
     created = False
     try:
         with zipfile.ZipFile(target, "x") as zf:
             created = True
-            for name, mode in entries:
+            for name, mode, data in entries:
                 info = zipfile.ZipInfo(name, date_time=ZIP_DATE)
                 info.create_system = 3                        # Unix, so that the modes count, wherever the zip is made
                 info.external_attr = mode << 16 | (0x10 if mode == DIR_MODE else 0)   # 0x10: the MS-DOS directory flag
@@ -2037,7 +2068,7 @@ def _write_zip(target: Path, root: Path, top: str, modes: dict[str, int]) -> Non
                     zf.mkdir(info)
                 else:
                     info.compress_type = zipfile.ZIP_DEFLATED
-                    zf.writestr(info, (root / name).read_bytes(), compresslevel=9)
+                    zf.writestr(info, data, compresslevel=9)
     except BaseException:
         if created:
             target.unlink(missing_ok=True)
@@ -2050,7 +2081,8 @@ def render_reproducer(scenario: Scenario, files: dict[str, bytes], gradle_versio
     heredoc cannot hold the content), edits are diffs for patch -p1, and deletes and clears are rm -rf.
 
     files is the project's starting state as zipped, path -> bytes. The text depends on nothing else, so the same
-    scenario gives the same bytes on every machine.
+    scenario gives the same bytes on every machine. A shell step that uses the wrapper, which is not in the zip, is
+    refused.
     """
     out = [f"# {_visible(scenario.name)}", ""]
     if scenario.description:
@@ -2063,12 +2095,18 @@ def render_reproducer(scenario: Scenario, files: dict[str, bytes], gradle_versio
         out += ["In the shell steps, Gradle is `$GRADLE`, and any extra arguments are in `$GRADLE_ARGS`. Set them first:",
                 "", "```sh", "GRADLE=gradle", "GRADLE_ARGS=", "```", ""]
     files = dict(files)
-    dirs = {"/".join(Path(rel).parts[:k]) for rel in files for k in range(1, len(Path(rel).parts))}
+    dirs = {"/".join(rel.split("/")[:k]) for rel in files for k in range(1, rel.count("/") + 1)}
     for i, step in enumerate(scenario.steps, start=1):
         body: list[str] = []
         label = step.name
         if isinstance(step, RunStep):
-            command = f"gradle {step.command}".rstrip() if step.kind == "gradle" else _GRADLEW_RE.sub("gradle", step.command)
+            if step.kind == "gradle":
+                command = f"gradle {step.command}".rstrip()
+            else:
+                command = _GRADLEW_RE.sub("gradle", step.command)
+                if m := _WRAPPER_USE_RE.search(command):
+                    raise GustError(f"steps[{i}].run.shell: the command uses the wrapper ({m[0]!r}), which is left out "
+                                    f"of the zip")
             label = label or f"Run: {command}"
             body += _expect_comments(step.expect) + [command]
         elif isinstance(step, WriteStep):
@@ -2076,8 +2114,8 @@ def render_reproducer(scenario: Scenario, files: dict[str, bytes], gradle_versio
                 rel = Path(rel).as_posix()
                 parent = rel.rpartition("/")[0]
                 if parent and parent not in dirs:
-                    body.append(f"mkdir -p {shlex.quote(parent)}")
-                    dirs |= {"/".join(Path(parent).parts[:k]) for k in range(1, len(Path(parent).parts) + 1)}
+                    body.append(f"mkdir -p {_sh_path(parent)}")
+                    dirs |= {"/".join(parent.split("/")[:k]) for k in range(1, parent.count("/") + 2)}
                 body += _sh_write(rel, content)
                 files[rel] = content.encode("utf-8")
         elif isinstance(step, EditStep):
@@ -2093,7 +2131,7 @@ def render_reproducer(scenario: Scenario, files: dict[str, bytes], gradle_versio
                 body += _sh_edit(rel, before, after)
                 files[rel] = after.encode("utf-8")
         else:
-            q = shlex.quote(step.dir)
+            q = _sh_path(step.dir)
             body.append(f"rm -rf {q}" if step.kind == "delete" else f"rm -rf {q} && mkdir {q}")
             prefix = step.dir + "/"
             files = {rel: data for rel, data in files.items() if not rel.startswith(prefix)}
@@ -2111,6 +2149,11 @@ def _visible(text: str) -> str:
     return _CONTROL_RE.sub(lambda m: f"\\x{ord(m[0]):02x}", text)
 
 
+def _sh_path(rel: str) -> str:
+    """rel quoted for sh, as ./rel when it starts with -, so that no command reads it as an option."""
+    return shlex.quote("./" + rel if rel.startswith("-") else rel)
+
+
 def _expect_comments(expect: Expect) -> list[str]:
     """What a run step must do, as shell comments; nothing for a plain pass."""
     lines = ["# expected to fail"] if expect.exit == "fail" else []
@@ -2122,22 +2165,27 @@ def _expect_comments(expect: Expect) -> list[str]:
 
 
 def _edited(text: str, edit: Edit, where: str) -> str:
-    """The text after the edit. The text is taken as it is, line ends included, where the replaced text occurs
-    exactly once in it; else with CRLF read as LF, as a run reads it."""
-    if text.count(edit.replace) == 1:
-        return text.replace(edit.replace, edit.with_)
-    lf = text.replace("\r\n", "\n").replace("\r", "\n")
-    n = lf.count(edit.replace)
+    """The text after the edit, as a run makes it: a line end in the replaced text matches CRLF, CR, or LF alike, and
+    in a file with one kind of line end, a bare LF in the replacement is written as that kind.
+
+    The same rules as _apply_edit's, for a file in memory; once _apply_edit keeps line ends, this can call it."""
+    pattern = re.compile("(?>\r\n|\r|\n)".join(map(re.escape, re.split(r"\r\n|\r|\n", edit.replace))))
+    n = len(pattern.findall(text))
     if n != 1:
         raise GustError(f"{where}.replace: {edit.replace!r} occurs {n} times in {edit.file} when the step runs; an edit needs exactly one")
-    return lf.replace(edit.replace, edit.with_)
+    crlf = text.count("\r\n")
+    lf = text.count("\n") - crlf
+    with_ = edit.with_
+    if crlf and not lf:                                       # a CRLF file: a bare LF in the replacement as CRLF
+        with_ = re.sub(r"(?<!\r)\n", "\r\n", with_)
+    return pattern.sub(lambda _: with_, text)
 
 
 def _sh_write(rel: str, content: str) -> list[str]:
     """Shell lines for writing content to rel: a heredoc, with EOF2, EOF3, ... when a line of the content is EOF; printf
     for content a heredoc cannot hold as it is: without a final newline, or with a carriage return or other control
     character, which is written as an escape."""
-    q = shlex.quote(rel)
+    q = _sh_path(rel)
     if _CONTROL_RE.search(content):
         fmt = _CONTROL_RE.sub(lambda m: "\\r" if m[0] == "\r" else f"\\{ord(m[0]):03o}",
                               content.replace("\\", "\\\\").replace("%", "%%"))
@@ -2162,7 +2210,8 @@ def _sh_edit(rel: str, before: str, after: str) -> list[str]:
     if _CONTROL_RE.search(before + after) or re.search(r"\s", rel):
         return ["# the whole file, written anew instead of a diff for patch", *_sh_write(rel, after)]
     diff = []
-    for line in difflib.unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True), f"a/{rel}", f"b/{rel}"):
+    lines = [re.findall(r"[^\n]*\n|[^\n]+", text) for text in (before, after)]   # split at LF only, as patch does
+    for line in difflib.unified_diff(*lines, f"a/{rel}", f"b/{rel}"):
         if line.startswith(("--- ", "+++ ")):
             line = line.rstrip("\t\n") + "\n"
         diff.append(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n")
@@ -2275,8 +2324,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="the zip to write, which must not exist (default: <stem>.zip in the working directory, or "
                             "<name>.zip for stdin)")
     p_zip.add_argument("--gradle", metavar="VERSION",
-                       help=f"the Gradle version in {REPRODUCER} (default: setup.gradle, or with "
-                            f"setup.gradle = \"wrapper\" the version in the wrapper's properties)")
+                       help=f"the Gradle version in {REPRODUCER} (default: setup.gradle, or the version in the "
+                            f"wrapper's properties when the steps run with the project's own wrapper)")
     parser.set_defaults(_subparsers={name: sp for name, sp in sub.choices.items()})
     return parser
 

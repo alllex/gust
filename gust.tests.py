@@ -2126,12 +2126,20 @@ run.shell = "true"
 class ZipTest(GustCase):
     """gust zip: the project's starting state and a REPRODUCER.md in a zip, with no Gradle run."""
 
-    def setUp(self):
-        super().setUp()
-        self.temp_root = self.tmp / "temp"                  # where the staging dir goes, to see it removed
-        self.temp_root.mkdir()
-        self.addCleanup(setattr, tempfile, "tempdir", tempfile.tempdir)
-        tempfile.tempdir = str(self.temp_root)
+    def remote(self, files):
+        """A local git repository with one commit of files, path -> (git mode, bytes), made with git's plumbing, so
+        that any name and mode is possible on any file system. Returns its setup.layout.remote link."""
+        repo = self.tmp / "repo"
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+
+        def git(*args, data=None):
+            return subprocess.run(["git", *args], cwd=repo, input=data, check=True, capture_output=True, env=env).stdout.decode().strip()
+        repo.mkdir()
+        git("init", "-q")
+        for rel, (mode, data) in files.items():
+            git("update-index", "--add", "--cacheinfo", f"{mode},{git('hash-object', '-w', '--stdin', data=data)},{rel}")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "one")
+        return f"{repo.as_posix()}#{git('rev-parse', 'HEAD')}"
 
     def readme(self, text, gradle_version=None):
         scenario = gs.load_scenario(text, base_dir=self.tmp)
@@ -2295,8 +2303,30 @@ rm -rf build
         with self.assertRaises(gs.GustError) as cm:            # a multi-line replace that fits only with CRLF read as LF
             self.readme('[setup.layout.project]\n"c.txt" = "a\\r\\nb\\r\\n"\n[[steps]]\nedit = [{ file = "c.txt", replace = "a\\nb\\nc", with = "" }]\n')
         self.assertEqual(str(cm.exception), "steps[1].edit[1].replace: 'a\\nb\\nc' occurs 0 times in c.txt when the step runs; an edit needs exactly one")
-        self.assertIn("# the whole file, written anew instead of a diff for patch\ncat > c.txt <<'EOF'\nb\nEOF\n",
-                      self.readme('[setup.layout.project]\n"c.txt" = "a\\r\\nb\\r\\n"\n[[steps]]\nedit = [{ file = "c.txt", replace = "a\\n", with = "" }]\n'))
+        crlf = '[setup.layout.project]\n"c.txt" = "a\\r\\nb\\r\\n"\n[[steps]]\nedit = [{ file = "c.txt", replace = "a\\nb", with = "x\\ny" }]\n'
+        self.assertIn("printf 'x\\r\ny\\r\n' > c.txt\n", self.readme(crlf))       # LF matches CRLF, and is written as CRLF there
+
+    def test_edits_split_lines_at_lf_only(self):
+        text = '[setup.layout.project]\n"u.txt" = "one\u2028two\\u0085\\ntwo\\nthree\\n"\n[[steps]]\nedit = [{ file = "u.txt", replace = "three", with = "3" }]\n'
+        readme = self.readme(text)
+        self.assertIn("@@ -1,3 +1,3 @@\n one\u2028two\u0085\n two\n-three\n+3\nEOF\n", readme)
+        if shutil.which("patch"):
+            project = self.tmp / "p"
+            project.mkdir()
+            (project / "u.txt").write_bytes("one\u2028two\u0085\ntwo\nthree\n".encode())
+            self.run_snippets(readme, project)
+            self.assertEqual((project / "u.txt").read_bytes(), "one\u2028two\u0085\ntwo\n3\n".encode())
+
+    def test_paths_with_a_leading_dash(self):
+        readme = self.readme('[[steps]]\nwrite = { "-d/-f.txt" = "f\\n", "-g.txt" = "g" }\n[[steps]]\nclear = "-d"\n'
+                             '[[steps]]\nwrite."-e/x.txt" = "x\\n"\n[[steps]]\ndelete = "-e"\n')
+        self.assertIn("mkdir -p ./-d\ncat > ./-d/-f.txt <<'EOF'\n", readme)
+        self.assertIn("rm -rf ./-d && mkdir ./-d\n", readme)
+        project = self.tmp / "p"
+        project.mkdir()
+        self.run_snippets(readme, project)
+        self.assertEqual(sorted(p.relative_to(project).as_posix() for p in project.rglob("*")), ["-d", "-g.txt"])
+        self.assertEqual((project / "-g.txt").read_text(), "g")
 
     def test_byte_identical_across_runs_and_dirs(self):
         scenario = self.scenario_file('description = "d"\n[setup.layout.project]\n"b.txt" = "b\\n"\n"a/x.txt" = "x\\n"\n'
@@ -2330,48 +2360,75 @@ rm -rf build
         code, out, err = self.cli("zip", "-", stdin='name = "piped"\n[[steps]]\nrun.gradle = "help"\n')
         self.assertEqual((code, out, err), (gs.EXIT_OK, f"{self.tmp / 'piped.zip'}\n", ""))
         self.assertFalse((self.gust / gs.SHARED_HOME).exists())    # no Gradle user home, since no Gradle runs
-        self.assertEqual(list(self.temp_root.iterdir()), [])
+        for name in ("...zip", ".zip", "a b.zip"):                     # the top folder: a name, as a scenario's
+            code, out, err = self.cli("zip", str(scenario), "-o", name)
+            self.assertEqual((code, out), (gs.EXIT_ERROR, ""), name)
+            self.assertTrue(err.startswith("ERROR: the zip's top folder would be "), err)
+            self.assertFalse((self.tmp / name).exists())
 
     def test_wrapper_left_out_and_remote_files_from_the_commit(self):
-        repo = self.tmp / "repo"
-        (repo / "gradle" / "wrapper").mkdir(parents=True)
-        (repo / "tools").mkdir()
-        (repo / "settings.gradle").write_text("// remote\n")
-        (repo / "keep.txt").write_bytes(b"line\r\n")                 # committed as CRLF, so kept as CRLF
-        (repo / "gradlew").write_text("#!/bin/sh\n")
-        (repo / "gradlew.bat").write_text("@rem\n")
-        (repo / "gradle" / "wrapper" / "gradle-wrapper.jar").write_bytes(b"PK\0\0")
-        (repo / "gradle" / "wrapper" / "gradle-wrapper.properties").write_text(
-            "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14.3-bin.zip\n")
-        (repo / "gradle" / "libs.versions.toml").write_text("[versions]\n")
-        (repo / "tools" / "run.sh").write_text("#!/bin/sh\n")
-        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
-        for args in (["init", "-q"], ["add", "."], ["update-index", "--chmod=+x", "gradlew", "tools/run.sh"],
-                     ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "one"]):
-            subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, env=env)
-        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
-        scenario = self.scenario_file(f'setup.gradle = "wrapper"\nsetup.layout.remote = "{repo.as_posix()}#{sha}"\n'
+        link = self.remote({
+            "settings.gradle": ("100644", b"// remote\n"),
+            "keep.txt": ("100644", b"line\r\n"),                      # committed as CRLF, so kept as CRLF
+            "gradlew": ("100755", b"#!/bin/sh\n"),
+            "gradlew.bat": ("100644", b"@rem\n"),
+            "gradle/wrapper/gradle-wrapper.jar": ("100644", b"PK\0\0"),
+            "gradle/wrapper/gradle-wrapper.properties": ("100644", b"distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14.3-bin.zip\n"),
+            "gradle/libs.versions.toml": ("100644", b"[versions]\n"),
+            "tools/run.sh": ("100755", b"#!/bin/sh\n"),
+            "na\u00efve.txt": ("100644", b"utf-8 name\n"),
+        })
+        scenario = self.scenario_file(f'setup.gradle = "wrapper"\nsetup.layout.remote = "{link}"\n'
                                       '[setup.layout.project]\n"tools/run.sh" = "#!/bin/sh\\necho own\\n"\n'
-                                      '[[steps]]\nrun.shell = "./gradlew test"\n', "remote.toml")
+                                      '[[steps]]\nrun.shell = "./gradlew test && ../gradlew help"\n', "remote.toml")
         code, out, err = self.cli("zip", str(scenario))
         self.assertEqual((code, err), (gs.EXIT_OK, ""), err)
         entries = self.entries(self.tmp / "remote.zip")
         self.assertEqual(list(entries), ["remote/", "remote/REPRODUCER.md", "remote/gradle/", "remote/gradle/libs.versions.toml",
-                                         "remote/keep.txt", "remote/settings.gradle", "remote/tools/", "remote/tools/run.sh"])
+                                         "remote/keep.txt", "remote/na\u00efve.txt", "remote/settings.gradle", "remote/tools/",
+                                         "remote/tools/run.sh"])
         self.assertEqual(entries["remote/tools/run.sh"][0], 0o100755)            # the executable bit of the commit
         self.assertEqual(entries["remote/tools/run.sh"][2], b"#!/bin/sh\necho own\n")   # the layout's file, over the remote's
         self.assertEqual(entries["remote/keep.txt"][2], b"line\r\n")
         readme = entries["remote/REPRODUCER.md"][2].decode()
         self.assertIn("Needs Gradle 8.14.3, as `gradle` on PATH.\n", readme)    # from the wrapper's distributionUrl
-        self.assertIn("```sh\ngradle test\n```", readme)
-        self.assertNotIn(repo.as_posix(), readme)
-        self.assertNotIn(sha, readme)
-        scenario.write_text(scenario.read_text() + '[[steps]]\nedit = [{ file = "gradle/wrapper/gradle-wrapper.properties", replace = "8", with = "9" }]\n')
-        code, out, err = self.cli("zip", str(scenario), "-o", "edited.zip")
-        self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
-        self.assertEqual(err, "ERROR: steps[2].edit[1].file: 'gradle/wrapper/gradle-wrapper.properties' is left out of the zip "
-                              "with the wrapper, so it cannot be edited there\n")
-        self.assertFalse((self.tmp / "edited.zip").exists())
+        self.assertIn("```sh\ngradle test && gradle help\n```", readme)
+        self.assertNotIn(link.partition("#")[0], readme)
+        self.assertNotIn(link.partition("#")[2], readme)
+        scenario.write_text(scenario.read_text().replace('setup.gradle = "wrapper"\n', ""))   # gust runs the project's gradlew then too
+        self.assertEqual(self.cli("zip", str(scenario), "-o", "default.zip")[0], gs.EXIT_OK)
+        self.assertIn("Needs Gradle 8.14.3, as", self.entries(self.tmp / "default.zip")["default/REPRODUCER.md"][2].decode())
+        for step, message in (
+                ('edit = [{ file = "gradle/wrapper/gradle-wrapper.properties", replace = "8", with = "9" }]',
+                 "steps[2].edit[1].file: 'gradle/wrapper/gradle-wrapper.properties' is left out of the zip with the wrapper, so it cannot be edited there"),
+                ('run.shell = "test -x gradlew"', "steps[2].run.shell: the command uses the wrapper ('gradlew'), which is left out of the zip"),
+                ('run.shell = "cat gradle/wrapper/gradle-wrapper.properties"', "steps[2].run.shell: the command uses the wrapper ('gradle/wrapper'), which is left out of the zip")):
+            (self.tmp / "more.toml").write_text(scenario.read_text() + f"[[steps]]\n{step}\n")
+            code, out, err = self.cli("zip", str(self.tmp / "more.toml"))
+            self.assertEqual((code, out, err), (gs.EXIT_ERROR, "", f"ERROR: {message}\n"))
+            self.assertFalse((self.tmp / "more.zip").exists())
+
+    def test_names_that_differ_in_case_only(self):
+        link = self.remote({"A.txt": ("100644", b"upper\n"), "a.txt": ("100644", b"lower\n")})
+        scenario = self.scenario_file(f'setup.layout.remote = "{link}"\n[[steps]]\nrun.gradle = "help"\n', "case.toml")
+        self.assertEqual(self.cli("zip", str(scenario))[0], gs.EXIT_OK)
+        entries = self.entries(self.tmp / "case.zip")
+        self.assertEqual((entries["case/A.txt"][2], entries["case/a.txt"][2]), (b"upper\n", b"lower\n"))
+
+    def test_links_that_leave_the_project_are_refused(self):
+        for target in ("/etc/passwd", "../../outside", "x/../../../y", "C:/x"):            # from sub/: ../a.txt is inside
+            with self.subTest(target=target):
+                shutil.rmtree(self.tmp / "repo", ignore_errors=True)
+                shutil.rmtree(self.gust, ignore_errors=True)
+                link = self.remote({"sub/l": ("120000", target.encode()), "a.txt": ("100644", b"a\n")})
+                scenario = self.scenario_file(f'setup.layout.remote = "{link}"\n[[steps]]\nrun.gradle = "help"\n', "links.toml")
+                code, out, err = self.cli("zip", str(scenario))
+                self.assertEqual((code, out, err), (gs.EXIT_ERROR, "", f"ERROR: setup.layout.remote: the link 'sub/l' points to {target!r}, outside the project\n"))
+        shutil.rmtree(self.tmp / "repo")
+        link = self.remote({"sub/l": ("120000", b"../a.txt"), "a.txt": ("100644", b"a\n")})
+        scenario = self.scenario_file(f'setup.layout.remote = "{link}"\n[[steps]]\nrun.gradle = "help"\n', "inside.toml")
+        self.assertEqual(self.cli("zip", str(scenario))[0], gs.EXIT_OK)
+        self.assertEqual(self.entries(self.tmp / "inside.zip")["inside/sub/l"][:3:2], (0o120777, b"../a.txt"))
 
     def test_refusals(self):
         scenario = self.scenario_file('[[steps]]\nrun.gradle = "help"\n', "s.toml")
@@ -2393,23 +2450,18 @@ rm -rf build
         own = self.scenario_file('[setup.layout.project]\n"REPRODUCER.md" = "x"\n[[steps]]\nrun.gradle = "help"\n', "own.toml")
         self.assertEqual(self.cli("zip", str(own)), (gs.EXIT_ERROR, "", "ERROR: the project has a REPRODUCER.md of its own, where the zip's REPRODUCER.md goes\n"))
         self.assertEqual(sorted(p.name for p in self.tmp.glob("*.zip")), ["s.zip", "v.zip"])
-        self.assertEqual(list(self.temp_root.iterdir()), [])
 
-    def test_a_failure_leaves_no_zip_and_no_temp_dir(self):
+    def test_a_failure_leaves_no_zip(self):
         scenario = self.scenario_file('[setup.layout.project]\n"a.txt" = "a\\n"\n[[steps]]\nrun.gradle = "help"\n', "s.toml")
-        staged = []
         real_writestr = zipfile.ZipFile.writestr
 
         def failing_writestr(zf, info, data, **kw):
-            staged.extend(p.name for p in self.temp_root.iterdir())
             real_writestr(zf, info, data, **kw)
             raise OSError(28, "No space left on device")
         with mock.patch.object(zipfile.ZipFile, "writestr", failing_writestr):
             code, out, err = self.cli("zip", str(scenario))
         self.assertEqual((code, out, err), (gs.EXIT_ERROR, "", "ERROR: [Errno 28] No space left on device\n"))
-        self.assertEqual(len(staged), 1)                          # the staging dir was there while the zip was written
         self.assertFalse((self.tmp / "s.zip").exists())
-        self.assertEqual(list(self.temp_root.iterdir()), [])
 
 
 class WindowsTest(GustCase):
