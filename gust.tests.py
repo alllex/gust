@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import gust as gs
@@ -2293,6 +2294,53 @@ class SpecTest(unittest.TestCase):
                 self.assertNotIn(gone, text, f"{gone!r} in {where}")
         for command in ("check SCENARIO", "stop-daemons SCENARIO [--out DIR] [--gradle BIN] [--gradle-user-home DIR]"):
             self.assertIn(command, gs.FORMAT_SPEC, command)
+
+
+class Tty(io.StringIO):
+    def isatty(self):
+        return True
+
+
+class ColorTest(GustCase):
+    """When the console words are colored, how, and that the out dir and the JSON stay plain."""
+
+    def test_color_on(self):
+        del os.environ["NO_COLOR"]
+        for env, stream, want in [({}, io.StringIO(), False), ({}, Tty(), True), ({"TERM": "dumb"}, Tty(), False),
+                                  ({"NO_COLOR": "1"}, Tty(), False), ({"FORCE_COLOR": "1"}, io.StringIO(), True),
+                                  ({"FORCE_COLOR": "1", "TERM": "dumb"}, Tty(), True),
+                                  ({"NO_COLOR": "1", "FORCE_COLOR": "1"}, Tty(), False), ({"NO_COLOR": ""}, Tty(), True)]:
+            with unittest.mock.patch.dict(os.environ, env):
+                self.assertEqual(gs.color_on(stream), want, env)
+        with unittest.mock.patch.object(gs, "WINDOWS", True):
+            self.assertFalse(gs.color_on(Tty()))                                         # no console handle behind it
+            with open(os.devnull, "w") as nul:                                           # NUL, a tty to Windows, but no console
+                self.assertFalse(gs.color_on(nul))
+
+    def test_each_word_alone_is_colored(self):
+        for word, sgr in [(gs.EXPECTED, "32"), (gs.UNEXPECTED, "1;31"), ("SUCCESS", "1"), ("FAILURE", "33"), (gs.ERROR, "31")]:
+            self.assertEqual(gs.paint(word, True), f"\x1b[{sgr}m{word}\x1b[0m")
+            self.assertEqual(gs.paint(word, False), word)
+
+    def test_console_colored_files_and_json_plain(self):
+        del os.environ["NO_COLOR"]
+        os.environ["FORCE_COLOR"] = "1"                                                  # through cli's StringIO, a pipe in effect
+        on = {word: gs.paint(word, True) for word in gs.STYLES}
+        for name, text, lines in [
+            ("pass", '[[steps]]\nrun.shell = "true"\n', [f"{on['EXPECTED']}: exit=0", f"result: {on['SUCCESS']} (1/1"]),
+            ("fail", '[[steps]]\nrun.shell = "true"\n[[steps]]\nrun.shell = "false"\n',
+             [f"{on['EXPECTED']}: exit=0", f"{on['UNEXPECTED']}: exit=1", f"result: {on['FAILURE']} (2/2"]),
+            ("err", '[setup.layout.project]\n"f.txt" = "aa"\n[[steps]]\n[[steps.edit]]\nfile = "f.txt"\nreplace = "a"\nwith = "b"\n',
+             [f"{on['ERROR']}: 'a' occurs", f"result: {on['ERROR']} (1/1"]),
+        ]:
+            _, out, _ = self.cli("run", str(self.scenario_file(text, f"{name}.toml")), "--keep-daemons", "--json")
+            for line in lines:
+                self.assertIn(line, out, name)
+            self.assertEqual(out.count("\x1b["), 2 * len(lines), name)                   # the words, and nothing else
+            self.assertNotIn("\x1b", out.rstrip("\n").splitlines()[-1], name)            # the --json line
+            for f in (self.tmp / f"{name}.out").rglob("*"):
+                if f.is_file():
+                    self.assertNotIn(b"\x1b", f.read_bytes(), f)
 
 
 class VersionGateTest(unittest.TestCase):

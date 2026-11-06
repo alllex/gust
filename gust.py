@@ -48,6 +48,8 @@ EXIT_ERROR = 2       # error: bad input, a step that could not be carried out, o
 EXPECTED = "EXPECTED"        # a run step whose every check came out as expected
 UNEXPECTED = "UNEXPECTED"    # a run step with a check that came out unexpected
 ERROR = "ERROR"              # something gust could not do
+STYLES = {EXPECTED: "32", UNEXPECTED: "1;31", "SUCCESS": "1", "FAILURE": "33", ERROR: "31"}   # SGR codes of the
+                             # 16-color palette, which terminal themes remap: no bright 9x, no bold with green or yellow
 
 # --- the out dir and the .gust cache
 MARKER = ".gust-run"            # marks an out dir as made by gust, so it may be removed and recreated
@@ -446,6 +448,13 @@ stdout. For stop-daemons the console has the header and a full [STOP] block
 (label, `$` line, `exit=0 in 0.2s -> stop-daemons.log`); on failure the last
 line is `ERROR: exit=N ...`, followed by result: ERROR. On success, check and
 stop-daemons have no result: line.
+
+On a terminal the words are colored, in the terminal's own palette: EXPECTED
+green, UNEXPECTED bold red, ERROR red, SUCCESS bold, FAILURE yellow. With
+NO_COLOR set, or TERM=dumb, the console is plain; with FORCE_COLOR set, it is
+colored through a pipe too. Logs, summary.json, and the --json line are always
+plain. FORCE_COLOR is passed on to the steps as well, so a shell step's log can
+get color codes from a tool that honors it.
 
 With --json (run, check), the summary is printed as one JSON object on
 the last line of stdout; for run it is also in <out>/summary.json. Its keys
@@ -1505,10 +1514,12 @@ class Run:
     trace: bool = False
     gradle_args: list[str] = field(default_factory=list)
     choice: GradleChoice | None = None
+    color: bool = False          # whether the words on out are colored; settled from out in __post_init__
 
     def __post_init__(self) -> None:
         if self.out is None:
             self.out = sys.stdout
+        self.color = color_on(self.out)
         self.user_home.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -1614,7 +1625,7 @@ def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
         if stop_daemons:
             summary.stop_daemons["after"] = _stop_daemons(run, "[AFT]", "stop-daemons-after.log", full=False)
     (run.out_dir / "summary.json").write_text(summary.to_json() + "\n", encoding="utf-8", newline="")
-    word = summary.result.upper()
+    word = paint(summary.result.upper(), run.color)
     print(f"result: {word} ({len(summary.steps)}/{len(steps)} steps ran)", file=run.out)
     print_out(run)
     return summary
@@ -1634,7 +1645,7 @@ def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
         exit_code = _run_logged(argv, run.project, run.env, run.out_dir / log_rel, run.out if run.show_output else None)
     except OSError as e:                                           # the project dir or the binary is gone, say
         message = f"cannot run {shown}: {e.strerror or e}" + (f": {e.filename}" if e.filename else "")
-        print(f"{ERROR}: {message}", file=run.out)
+        print(f"{paint(ERROR, run.color)}: {message}", file=run.out)
         return StepResult(index=index, kind=step.kind, name=step.label(), result="error", command=shown, error=message)
     duration = time.monotonic() - started
     output_text = (run.out_dir / log_rel).read_text(encoding="utf-8", errors="replace")   # CRLF read as LF
@@ -1648,7 +1659,7 @@ def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
     )
     n = len(checks) - 1                                            # the output checks, past the exit check
     checks_note = f", {n} output check{'s' if n != 1 else ''}" if n else ""
-    word = UNEXPECTED if unexpected else EXPECTED
+    word = paint(UNEXPECTED if unexpected else EXPECTED, run.color)
     print(f"{word}: exit={exit_code}{checks_note} in {duration:.1f}s -> {log_rel}" + (f", {trace_rel}" if traced else ""),
           file=run.out)
     for check in unexpected:
@@ -1681,7 +1692,7 @@ def _change_files(run: Run, step: WriteStep | EditStep | DeleteStep, index: int)
         print(f"{step.dir} {done}" if isinstance(step, DeleteStep)
               else f"{n} file{'s' if n != 1 else ''} {'written' if kind == 'write' else 'edited'}", file=run.out)
         return StepResult(index=index, kind=kind, name=step.label(), result="done", files=files)
-    print(f"{ERROR}: {message}", file=run.out)
+    print(f"{paint(ERROR, run.color)}: {message}", file=run.out)
     return StepResult(index=index, kind=kind, name=step.label(), result="error", files=files, error=message)
 
 
@@ -1700,7 +1711,7 @@ def _stop_daemons(run: Run, label: str, log_name: str, full: bool) -> dict:
     exit_code = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ), run.out_dir / log_name, None)
     duration = time.monotonic() - started
     if exit_code != 0:
-        print(f"{ERROR}: exit={exit_code} in {duration:.1f}s -> {log_name}", file=run.out)
+        print(f"{paint(ERROR, run.color)}: exit={exit_code} in {duration:.1f}s -> {log_name}", file=run.out)
     elif full:
         print(f"exit={exit_code} in {duration:.1f}s -> {log_name}", file=run.out)
     return {"exit_code": exit_code, "duration_s": round(duration, 1), "log": log_name}
@@ -1721,12 +1732,38 @@ def _install_wrapper(run: Run) -> dict:
                             run.out if run.show_output else None)
     duration = time.monotonic() - started
     if exit_code != 0:
-        print(f"{ERROR}: exit={exit_code} in {duration:.1f}s -> {INSTALL_LOG}", file=run.out)
+        print(f"{paint(ERROR, run.color)}: exit={exit_code} in {duration:.1f}s -> {INSTALL_LOG}", file=run.out)
         if not run.show_output:
             _print_tail(run.out_dir / INSTALL_LOG, run.tail, run.out)
     else:
         print(f"exit=0 in {duration:.1f}s -> {INSTALL_LOG}", file=run.out)
     return {"version": version, "log": INSTALL_LOG, "exit_code": exit_code}
+
+
+def color_on(out) -> bool:
+    """Whether to color the words on the console stream out: never with NO_COLOR, always with FORCE_COLOR, else on a
+    terminal whose TERM is not dumb. On Windows the console needs VT processing, turned on here; NUL has no console."""
+    if os.environ.get("NO_COLOR"):
+        return False
+    tty = getattr(out, "isatty", lambda: False)()
+    vt = tty and (not WINDOWS or _enable_vt(out))
+    return bool(os.environ.get("FORCE_COLOR")) or (vt and os.environ.get("TERM") != "dumb")
+
+
+def _enable_vt(out) -> bool:
+    """Turn on VT processing for out's console (Windows 10 and newer); False when out is no console."""
+    try:
+        import ctypes, msvcrt
+        kernel32, mode = ctypes.windll.kernel32, ctypes.c_uint32()
+        handle = ctypes.c_void_p(msvcrt.get_osfhandle(out.fileno()))
+        return bool(kernel32.GetConsoleMode(handle, ctypes.byref(mode)) and kernel32.SetConsoleMode(handle, mode.value | 4))
+    except (ImportError, AttributeError, OSError, ValueError):   # not Windows after all, or no file descriptor
+        return False
+
+
+def paint(word: str, color: bool) -> str:
+    """word in its STYLES color when color is on, else as it is. Only for printing: files and JSON stay plain."""
+    return f"\x1b[{STYLES[word]}m{word}\x1b[0m" if color else word
 
 
 RULE_WIDTH = 80   # fixed, so captured console output looks the same everywhere
@@ -2133,7 +2170,7 @@ def _cli_stop_daemons(run: Run, ref: str) -> int:
     print_header(run.scenario, run.out_dir, run.user_home, run.choice, run.out)
     stopped = _stop_daemons(run, "[STOP]", "stop-daemons.log", full=True)["exit_code"] == 0
     if not stopped:
-        print(f"result: {ERROR}", file=run.out)
+        print(f"result: {paint(ERROR, run.color)}", file=run.out)
     print_out(run)
     return EXIT_OK if stopped else EXIT_ERROR
 
@@ -2142,7 +2179,7 @@ def _cli_setup(run: Run) -> int:
     if run.scenario.project is not None:
         raise GustError(f"nothing to lay out: the project {run.scenario.project} is used in place, as it is")
     ok = begin(run, needed=False).result != "error"
-    print("result: set up" if ok else f"result: {ERROR}", file=run.out)
+    print("result: set up" if ok else f"result: {paint(ERROR, run.color)}", file=run.out)
     print_out(run)
     return EXIT_OK if ok else EXIT_ERROR
 
