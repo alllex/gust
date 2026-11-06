@@ -4,8 +4,8 @@
 A scenario is one TOML file: the files of a Gradle project, or the path of one
 to use in place, and an ordered list of steps. The files are laid out in an
 out dir, or the project dir is used as it is, and the steps run there in order,
-until the first step whose outcome differs from what the scenario expects.
-Gradle output goes to log files.
+until the first check that comes out unexpected. Gradle output goes to log
+files.
 
 Standard library only. Python 3.11+ (tomllib).
 """
@@ -16,7 +16,7 @@ import sys
 
 if sys.version_info < (3, 11):  # ahead of any import that needs 3.11; keep this block old-syntax only
     sys.stderr.write(
-        "gust.py needs Python 3.11 or newer (for tomllib); this is Python %s at %s\n"
+        "ERROR: gust.py needs Python 3.11 or newer (for tomllib); this is Python %s at %s\n"
         % (sys.version.split()[0], sys.executable)
     )
     sys.exit(2)
@@ -43,9 +43,16 @@ __version__ = "13-dev"
 
 WINDOWS = os.name == "nt"
 
-EXIT_OK = 0          # every step as expected
-EXIT_DEVIATED = 1    # a run step deviated; the run stopped there
-EXIT_ERROR = 2       # bad input, or a step that could not be carried out
+EXIT_OK = 0          # success: every check came out as expected
+EXIT_FAILURE = 1     # failure: a check came out unexpected; the run stopped at that step
+EXIT_ERROR = 2       # error: bad input, a step that could not be carried out, or a failed wrapper install
+
+# --- the console's verdict words, each printed as its own token, ahead of ": " or " ("
+EXPECTED = "EXPECTED"        # a run step whose every check came out as expected
+UNEXPECTED = "UNEXPECTED"    # a run step with a check that came out unexpected
+ERROR = "ERROR"              # something gust could not do; also the run's result: ERROR
+SUCCESS = "SUCCESS"          # the run's result: every check came out as expected
+FAILURE = "FAILURE"          # the run's result: a check came out unexpected
 
 # --- the out dir and the .gust cache
 MARKER = ".gust-run"            # marks an out dir as made by gust, so it may be removed and recreated
@@ -223,8 +230,9 @@ steps[].edit[]
                                     with only CRLF or only LF line ends, each \\n not after a \\r
                                     is written as the file's line end
 
-The run stops at the first run step that fails a check (a deviation), or at a
-write, edit, delete, or clear that cannot be applied (an error).
+Each check of a run step comes out as expected or unexpected. The run stops at
+the first run step with an unexpected check (a failure), or at a write, edit,
+delete, or clear that cannot be applied (an error).
 
 Example
 -------
@@ -342,16 +350,17 @@ Commands
                                   with nothing set up, installed, or fetched (an uncached remote is
                                   noted). The only thing written is what the --version probe leaves
                                   in the Gradle user home. Output: the header with the description
-                                  under scenario:, `steps: N (K gradle, L shell, M write, P edit,
-                                  Q delete, R clear)`, and result: ok, or the error. Worth running
-                                  before a long run.
+                                  under scenario:, then `steps: N (K gradle, L shell, M write,
+                                  P edit, Q delete, R clear)`, or the error. Worth running before
+                                  a long run.
                                   The --json summary is {scenario, description, gradle,
                                   gradle_version, steps (a count), step_counts, remote {link,
-                                  cached} when there is one, project when in place, status}.
+                                  cached} when there is one, project when in place, result}, with
+                                  result always "success", as in run's summary.
   setup SCENARIO [--out DIR | --tmp] [--gradle BIN|VERSION] [--gradle-user-home DIR] [--show-output]
                                   lay the project out and, with a version in play, install its
                                   wrapper; no step runs. Ends in `result: set up` (or
-                                  `result: error` after a failed install) and the out: line.
+                                  `result: ERROR` after a failed install) and the out: line.
                                   Refused in place.
   run SCENARIO [--out DIR | --tmp] [--gradle BIN|VERSION] [--gradle-user-home DIR] [--project DIR]
                [--json] [--tail N] [--show-output] [--keep-daemons] [--trace] [-- GRADLE_ARGS ...]
@@ -412,26 +421,28 @@ Console
 Once the preconditions pass, a header is printed: scenario:, out:, project:
 (in place only), home:, gradle:. With a remote, the remote: and checkout: lines
 come first, while the checkout is fetched or found in the cache. Then come
-blocks, each a label line and an outcome line:
+blocks, each a label line and a result line:
 
   [WRP] Install Gradle wrapper 9.7.1     a `$ <command>` line, the wrapper task's output with
-                                         --show-output, then `ok: exit 0 in 3.1s -> install-wrapper.log`.
-                                         On failure: `ERROR: exit N ...`, the log's tail, and
-                                         result: error (exit 2)
+                                         --show-output, then `exit=0 in 3.1s -> install-wrapper.log`.
+                                         On failure: `ERROR: exit=N ...`, the log's tail, and
+                                         result: ERROR (exit 2)
   [BEF] Stop Gradle daemons -> stop-daemons-before.log
-                                         one line, then `ERROR: exit N in 0.2s -> ...` on failure
+                                         one line, then `ERROR: exit=N in 0.2s -> ...` on failure
   [i/N] <step name>                      a run step: `$ <command>`, the output with --show-output, then
-                                         `ok: exit 1 in 0.4s -> step-01.log` or `DEVIATION: exit 0 in
-                                         0.4s -> step-01.log` and each failed check on its own line,
-                                         indented two spaces (`expected fail, got pass`, `output lacks
-                                         'BUILD FAILED'`, `output has 'BUILD SUCCESSFUL', which
-                                         no_output forbids`), then the log's last lines (--tail N,
-                                         default 30) unless the output was just shown. Any other
-                                         step: `ok: 2 files written`, `ok: 1 file edited`, `ok: build
-                                         deleted`, `ok: build was not there`, `ok: build cleared`,
-                                         `ok: build created`, or `ERROR: <what went wrong>`.
+                                         `EXPECTED: exit=1 in 0.4s -> step-01.log` when every check
+                                         came out as expected, else `UNEXPECTED: exit=0, 2 output
+                                         checks in 0.4s -> step-01.log` and each unexpected check on
+                                         its own line, indented two spaces (`expected fail, got pass`,
+                                         `output lacks 'BUILD FAILED'`, `output has 'BUILD
+                                         SUCCESSFUL', which no_output forbids`), then the log's last
+                                         lines (--tail N, default 30) unless the output was just
+                                         shown. Any other step: what was done (`2 files written`,
+                                         `1 file edited`, `build deleted`, `build was not there`,
+                                         `build cleared`, `build created`), or `ERROR: <what went
+                                         wrong>`.
   [AFT] Stop Gradle daemons -> stop-daemons-after.log
-  result: ok (3/3 steps ran)             or deviated, or error; out of the scenario's steps
+  result: SUCCESS (3/3 steps ran)        or FAILURE, or ERROR; out of the scenario's steps
   out:      <out dir>                    the out dir again, as the last line, to have the path at hand
                                          after a long console (run, setup, stop-daemons; with
                                          --json the JSON line follows it)
@@ -439,15 +450,36 @@ blocks, each a label line and an outcome line:
 Output and log tails sit between two 80-column rule lines: the opening one ends
 in the log file name (or "last K of M lines of <log>"), the closing one is all
 dashes. Commands are shown without the --gradle-user-home pair (or the trace
-properties of --trace). The outcome prefixes ok:, DEVIATION:, and ERROR: go to
-stdout; a precondition failure is a single `error: ...` line on stderr, with
-nothing on stdout. For stop-daemons the console has the header and a full
-[STOP] block (label, `$` line, outcome).
+properties of --trace). The words EXPECTED, UNEXPECTED, and ERROR go to stdout;
+a precondition failure is a single `ERROR: ...` line on stderr, with nothing on
+stdout (a usage error has the usage line before it). For stop-daemons the console has the header and a full [STOP] block
+(label, `$` line, `exit=0 in 0.2s -> stop-daemons.log`); on failure the last
+line is `ERROR: exit=N ...`, followed by result: ERROR. On success, check and
+stop-daemons have no result: line.
 
 With --json (run, check), the summary is printed as one JSON object on
 the last line of stdout; for run it is also in <out>/summary.json. Its keys
-follow the TOML's: `name` and `expect` per step, `description` at the top, and
-`gradle_args` for the arguments after --.
+follow the TOML's: `name` per step, `description` at the top, and
+`gradle_args` for the arguments after --. The words are those of the console,
+in lower case, all under the key `result`:
+
+  result                 the run: "success", "failure", or "error"; with "error", `error`
+                         holds the message: the step's, or `wrapper install failed: exit=N
+                         -> install-wrapper.log`
+  steps[].result         a run step: "expected", "unexpected", or "error"; any other step:
+                         "done" or "error". Every step with "error" has the message as its
+                         `error`, run steps included
+  steps[].checks         a run step's checks, every one, in the order exit, output, no_output:
+                           {"check": "exit", "expect": "fail", "got": "pass", "result": "unexpected"}
+                           {"check": "output", "text": "BUILD FAILED", "result": "unexpected"}
+                           {"check": "no_output", "text": "deprecated", "result": "expected"}
+                         with result "expected" or "unexpected"
+
+A run step also has its exit_code, duration_s, log, and command; one that could
+not start (its project dir gone, say) has only its command and error: no
+exit_code, duration_s, log, or checks. The daemon stops have neither a result
+nor checks: each is {exit_code, duration_s, log}, or {error} for a stop that
+could not start, which never changes the result.
 With --keep-daemons (run), both daemon stops are left out.
 With --trace (run), each run.gradle step runs with Gradle's internal trace
 properties right after the home pair:
@@ -458,15 +490,15 @@ properties right after the home pair:
 The step's build operations, one JSON object per line, end up in
 <out>/step-NN-ops-log.txt (Gradle 4.0 and newer). With Gradle 8.10 and older,
 step-NN-ops-tree.json and step-NN-ops-tree.txt appear next to it too. Once the
-file exists, its name follows the log's on the outcome line (`-> step-01.log,
+file exists, its name follows the log's on the result line (`-> step-01.log,
 step-01-ops-log.txt`) and is the step's trace in the summary. Shell steps are
 not traced; put the property in the step's command to trace one.
---tail N is how many log lines are shown after a deviation or a failed wrapper
-install (default 30).
+--tail N is how many log lines are shown after an unexpected check or a failed
+wrapper install (default 30).
 With --show-output, each run step's output appears on the console as it runs,
-untouched, between the step line and its outcome line, inside the rule lines.
-step-NN.log is written either way, and no tail follows a deviation. The daemon
-stops are never shown; the install block is.
+untouched, between the step line and its result line, inside the rule lines.
+step-NN.log is written either way, and no tail follows an unexpected check.
+The daemon stops are never shown; the install block is.
 -- GRADLE_ARGS ... (run): everything after a literal -- is appended
 to every run.gradle step's command, after the step's own arguments, so on a
 conflict the command line wins over the scenario:
@@ -596,7 +628,7 @@ Preconditions
 =============
 
 These are checked before the out dir is touched. Any failure means exit code 2
-and one `error: ...` line on stderr; a load error is prefixed with the
+and one `ERROR: ...` line on stderr; a load error is prefixed with the
 scenario's path (or stdin).
 
   - Python 3.11 or newer.
@@ -626,13 +658,14 @@ scenario's path (or stdin).
     itself happens after setup; if the wrapper task fails, the run ends as an
     error (exit 2) with the log's tail.
 
-Exit codes: 0 every step as expected; 1 a run step deviated from its
-expectation; 2 bad input (a failed precondition, a malformed scenario, bad
-arguments), a step that could not be carried out (an edit whose text was not
-found, a write onto a directory, a delete of a file), or a failed wrapper
+Exit codes: 0 success, every check came out as expected; 1 failure, a check
+came out unexpected; 2 error, gust could not do something: bad input (a failed
+precondition, a malformed scenario, bad arguments), a step that could not be
+carried out (an edit whose text was not found, a write onto a directory, a
+delete of a file, a command whose project dir is gone), or a failed wrapper
 install. summary.json is written for run only, and there it is present
-whenever the header was printed: on exit 1, and on exit 2 after the header. The
-daemon stops never change the exit code.
+whenever the header was printed: on exit 1, and on exit 2 after the header.
+The daemon stops never change the exit code.
 """
 
 
@@ -649,7 +682,7 @@ class GustError(Exception):
 
 
 class StepError(Exception):
-    """A write, edit, delete, or clear step that could not be carried out; an error, not a deviation."""
+    """A write, edit, delete, or clear step that could not be carried out; an error, not an unexpected check."""
 
 
 @dataclass(frozen=True)
@@ -658,21 +691,23 @@ class Expect:
     output: tuple[str, ...] = ()           # each must appear in the combined output
     no_output: tuple[str, ...] = ()        # none may appear in it
 
-    def to_json(self) -> dict:
-        d: dict = {"exit": self.exit}
-        if self.output:
-            d["output"] = list(self.output)
-        if self.no_output:
-            d["no_output"] = list(self.no_output)
-        return d
-
-    def deviations(self, exit_code: int, output_text: str) -> list[str]:
-        """Every check that did not hold, one short line each."""
+    def checks(self, exit_code: int, output_text: str) -> list[dict]:
+        """Every check, as a record with its result: the exit check first, then output, then no_output."""
+        def result(held: bool) -> str:
+            return "expected" if held else "unexpected"
         got = "pass" if exit_code == 0 else "fail"
-        found = [f"expected {self.exit}, got {got}"] if got != self.exit else []
-        found += [f"output lacks {t!r}" for t in self.output if t not in output_text]
-        found += [f"output has {t!r}, which no_output forbids" for t in self.no_output if t in output_text]
-        return found
+        return ([{"check": "exit", "expect": self.exit, "got": got, "result": result(got == self.exit)}]
+                + [{"check": "output", "text": t, "result": result(t in output_text)} for t in self.output]
+                + [{"check": "no_output", "text": t, "result": result(t not in output_text)} for t in self.no_output])
+
+
+def describe_check(check: dict) -> str:
+    """An unexpected check as one short console line."""
+    if check["check"] == "exit":
+        return f"expected {check['expect']}, got {check['got']}"
+    if check["check"] == "output":
+        return f"output lacks {check['text']!r}"
+    return f"output has {check['text']!r}, which no_output forbids"
 
 
 @dataclass(frozen=True)
@@ -1475,7 +1510,7 @@ def _line_end(text: str) -> str | None:
 
 def _delete_dir(run: Run, step: DeleteStep) -> str:
     """Remove the dir with everything in it; for clear, make it again, empty. The end state counts: a missing dir is
-    fine for delete, and made for clear when its parent is there. Returns what was done, for the ok: line.
+    fine for delete, and made for clear when its parent is there. Returns what was done, for the console line.
 
     Checked again right before, with the links above the dir followed: the dir itself is no link (a symlink or a
     junction), it is inside the project dir and on its device, and it neither is, holds, nor sits inside the out dir,
@@ -1515,9 +1550,8 @@ class StepResult:
     index: int
     kind: str                    # "gradle" | "shell" | "write" | "edit" | "delete" | "clear"
     name: str                    # given or implied
-    outcome: str                 # "pass" | "fail" | "done" | "error"
-    expect: dict | None = None   # run steps only, like deviations
-    deviations: list[str] | None = None   # empty when every check held
+    result: str                  # run steps: "expected" | "unexpected" | "error"; the others: "done" | "error"
+    checks: list[dict] | None = None   # run steps only: every check, each with its own result (see Expect.checks)
     exit_code: int | None = None
     duration_s: float | None = None
     log: str | None = None       # relative to the out dir
@@ -1525,10 +1559,6 @@ class StepResult:
     command: str | None = None   # as shown, without the --gradle-user-home pair
     files: list[str] | None = None
     error: str | None = None
-
-    @property
-    def deviated(self) -> bool:
-        return bool(self.deviations)
 
 
 @dataclass
@@ -1543,13 +1573,14 @@ class RunSummary:
     gradle_user_home: str | None = None
     remote: dict | None = None   # {"link", "checkout", "fetched"} when setup.layout.remote is set
     install: dict | None = None  # {"version", "log", "exit_code"} when a wrapper install ran
-    status: str = "ok"           # "ok" | "deviated" | "error"
+    result: str = "success"      # "success" | "failure" | "error", as on the console's result: line
+    error: str | None = None     # with result "error": the step's message, or the failed install's
     steps: list[StepResult] = field(default_factory=list)
-    stop_daemons: dict | None = None   # {"before", "after"}, each {"exit_code", "duration_s", "log"}
+    stop_daemons: dict | None = None   # {"before", "after"}, each {"exit_code", "duration_s", "log"}, or {"error"}
 
     def to_json(self) -> str:
         """The summary as one JSON line, fields in declaration order, without empty optional ones."""
-        always = ("scenario", "out", "project", "gradle", "status", "steps")
+        always = ("scenario", "out", "project", "gradle", "result", "steps")
         steps = [{k: v for k, v in vars(s).items() if v is not None} for s in self.steps]
         return json.dumps({k: (steps if k == "steps" else v)
                            for k, v in vars(self).items() if v or k in always})
@@ -1629,7 +1660,7 @@ def shared_home(gradle_user_home: Path | None) -> Path:
 
 def begin(run: Run, needed: bool) -> RunSummary:
     """What comes before the steps, for run and setup: the remote, the Gradle choice, the layout, the header,
-    and the wrapper install. Returns the summary, with status "error" when the install failed.
+    and the wrapper install. Returns the summary, with result "error" when the install failed.
     """
     scenario, out = run.scenario, run.out
     remote_info = None
@@ -1648,38 +1679,40 @@ def begin(run: Run, needed: bool) -> RunSummary:
     if run.choice.install:
         summary.install = _install_wrapper(run)
         if summary.install["exit_code"] != 0:                            # a failed install ends the run as an error
-            summary.status = "error"
+            summary.result = "error"
+            summary.error = f"wrapper install failed: exit={summary.install['exit_code']} -> {INSTALL_LOG}"
     return summary
 
 
 def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
-    """Set up, stop daemons, run the steps up to the first deviation or error, and stop daemons again.
+    """Set up, stop daemons, run the steps up to the first unexpected check or error, and stop daemons again.
 
-    Ends with summary.json and the result: and out: lines. No log tail is printed after a deviation
-    when the output was shown.
+    Ends with summary.json and the result: and out: lines. No log tail is printed after an unexpected
+    check when the output was shown.
     """
     steps = run.scenario.steps
     _check_shell(run.scenario)
     summary = begin(run, needed=stop_daemons or run.scenario.counts()["gradle"] > 0)
-    if summary.status != "error":                                        # a failed install: no step runs
+    if summary.result != "error":                                        # a failed install: no step runs
         if stop_daemons:
             summary.stop_daemons = {"before": _stop_daemons(run, "[BEF]", "stop-daemons-before.log", full=False)}
         for i, step in enumerate(steps, start=1):
             print(f"[{i}/{len(steps)}] {step.label()}", file=run.out)
             result = _run_command(run, step, i) if isinstance(step, RunStep) else _change_files(run, step, i)
             summary.steps.append(result)
-            if result.outcome == "error":
-                summary.status = "error"
+            if result.result == "error":
+                summary.result, summary.error = "error", result.error
                 break
-            if result.deviated:
-                summary.status = "deviated"
+            if result.result == "unexpected":
+                summary.result = "failure"
                 if not run.show_output:
                     _print_tail(run.out_dir / result.log, run.tail, run.out)
                 break
         if stop_daemons:
             summary.stop_daemons["after"] = _stop_daemons(run, "[AFT]", "stop-daemons-after.log", full=False)
     (run.out_dir / "summary.json").write_text(summary.to_json() + "\n", encoding="utf-8", newline="")
-    print(f"result: {summary.status} ({len(summary.steps)}/{len(steps)} steps ran)", file=run.out)
+    word = {"success": SUCCESS, "failure": FAILURE, "error": ERROR}[summary.result]
+    print(f"result: {word} ({len(summary.steps)}/{len(steps)} steps ran)", file=run.out)
     print_out(run)
     return summary
 
@@ -1694,25 +1727,35 @@ def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
         argv, shown = shell_argv(step.command), step.command      # shown as written
     print(f"$ {shown}", file=run.out)
     started = time.monotonic()
-    exit_code = _run_logged(argv, run.project, run.env, run.out_dir / log_rel, run.out if run.show_output else None)
+    try:
+        exit_code = _run_logged(argv, run.project, run.env, run.out_dir / log_rel, run.out if run.show_output else None)
+    except OSError as e:                                           # the project dir or the binary is gone, say
+        message = cannot_run(shown, e)
+        print(f"{ERROR}: {message}", file=run.out)
+        return StepResult(index=index, kind=step.kind, name=step.label(), result="error", command=shown, error=message)
     duration = time.monotonic() - started
-    outcome = "pass" if exit_code == 0 else "fail"
     output_text = (run.out_dir / log_rel).read_text(encoding="utf-8", errors="replace")   # CRLF read as LF
-    deviations = step.expect.deviations(exit_code, output_text)
+    checks = step.expect.checks(exit_code, output_text)
+    unexpected = [c for c in checks if c["result"] == "unexpected"]
     traced = trace is not None and (run.out_dir / trace_rel).is_file()
     result = StepResult(
-        index=index, kind=step.kind, name=step.label(), outcome=outcome, expect=step.expect.to_json(),
-        deviations=deviations, exit_code=exit_code, duration_s=round(duration, 1), log=log_rel,
+        index=index, kind=step.kind, name=step.label(), result="unexpected" if unexpected else "expected",
+        checks=checks, exit_code=exit_code, duration_s=round(duration, 1), log=log_rel,
         trace=trace_rel if traced else None, command=shown,
     )
-    checks = len(step.expect.output) + len(step.expect.no_output)
-    checks_note = f", {checks} output check{'s' if checks != 1 else ''}" if checks else ""
-    verdict = "DEVIATION" if deviations else "ok"
-    print(f"{verdict}: exit {exit_code}{checks_note} in {duration:.1f}s -> {log_rel}" + (f", {trace_rel}" if traced else ""),
+    n = len(step.expect.output) + len(step.expect.no_output)       # the output checks
+    checks_note = f", {n} output check{'s' if n != 1 else ''}" if n else ""
+    word = UNEXPECTED if unexpected else EXPECTED
+    print(f"{word}: exit={exit_code}{checks_note} in {duration:.1f}s -> {log_rel}" + (f", {trace_rel}" if traced else ""),
           file=run.out)
-    for deviation in deviations:
-        print(f"  {deviation}", file=run.out)
+    for check in unexpected:
+        print(f"  {describe_check(check)}", file=run.out)
     return result
+
+
+def cannot_run(shown: str, e: OSError) -> str:
+    """The message for a command that could not start."""
+    return f"cannot run {shown}: {e.strerror or e}" + (f": {e.filename}" if e.filename else "")
 
 
 def _change_files(run: Run, step: WriteStep | EditStep | DeleteStep, index: int) -> StepResult:
@@ -1737,11 +1780,11 @@ def _change_files(run: Run, step: WriteStep | EditStep | DeleteStep, index: int)
         message = f"cannot {kind} {rel}: {e.strerror}"
     else:
         n = len(files)
-        print(f"ok: {step.dir} {done}" if isinstance(step, DeleteStep)
-              else f"ok: {n} file{'s' if n != 1 else ''} {'written' if kind == 'write' else 'edited'}", file=run.out)
-        return StepResult(index=index, kind=kind, name=step.label(), outcome="done", files=files)
-    print(f"ERROR: {message}", file=run.out)
-    return StepResult(index=index, kind=kind, name=step.label(), outcome="error", files=files, error=message)
+        print(f"{step.dir} {done}" if isinstance(step, DeleteStep)
+              else f"{n} file{'s' if n != 1 else ''} {'written' if kind == 'write' else 'edited'}", file=run.out)
+        return StepResult(index=index, kind=kind, name=step.label(), result="done", files=files)
+    print(f"{ERROR}: {message}", file=run.out)
+    return StepResult(index=index, kind=kind, name=step.label(), result="error", files=files, error=message)
 
 
 def _stop_daemons(run: Run, label: str, log_name: str, full: bool) -> dict:
@@ -1749,19 +1792,24 @@ def _stop_daemons(run: Run, label: str, log_name: str, full: bool) -> dict:
 
     Around a run ([BEF], [AFT]) this is one line, plus an ERROR: line when the stop fails, which is
     never fatal. With full (the stop-daemons command) it is a block like a step's: label, `$` line,
-    outcome.
+    and the `exit=N in ...` line.
     """
     command = run.command("--stop")
     print(f"{label} Stop Gradle daemons" + ("" if full else f" -> {log_name}"), file=run.out)
     if full:
         print(f"$ {command.shown}", file=run.out)
     started = time.monotonic()
-    exit_code = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ), run.out_dir / log_name, None)
+    try:
+        exit_code = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ), run.out_dir / log_name, None)
+    except OSError as e:                                           # the project dir is gone, say: a failed stop, no log
+        message = cannot_run(command.shown, e)
+        print(f"{ERROR}: {message}", file=run.out)
+        return {"error": message}
     duration = time.monotonic() - started
     if exit_code != 0:
-        print(f"ERROR: exit {exit_code} in {duration:.1f}s -> {log_name}", file=run.out)
+        print(f"{ERROR}: exit={exit_code} in {duration:.1f}s -> {log_name}", file=run.out)
     elif full:
-        print(f"ok: exit {exit_code} in {duration:.1f}s -> {log_name}", file=run.out)
+        print(f"exit={exit_code} in {duration:.1f}s -> {log_name}", file=run.out)
     return {"exit_code": exit_code, "duration_s": round(duration, 1), "log": log_name}
 
 
@@ -1780,11 +1828,11 @@ def _install_wrapper(run: Run) -> dict:
                             run.out if run.show_output else None)
     duration = time.monotonic() - started
     if exit_code != 0:
-        print(f"ERROR: exit {exit_code} in {duration:.1f}s -> {INSTALL_LOG}", file=run.out)
+        print(f"{ERROR}: exit={exit_code} in {duration:.1f}s -> {INSTALL_LOG}", file=run.out)
         if not run.show_output:
             _print_tail(run.out_dir / INSTALL_LOG, run.tail, run.out)
     else:
-        print(f"ok: exit 0 in {duration:.1f}s -> {INSTALL_LOG}", file=run.out)
+        print(f"exit=0 in {duration:.1f}s -> {INSTALL_LOG}", file=run.out)
     return {"version": version, "log": INSTALL_LOG, "exit_code": exit_code}
 
 
@@ -1800,14 +1848,15 @@ def opening_rule(label: str) -> str:
 def _run_logged(argv: list[str], cwd: Path, env: dict, log_path: Path, echo) -> int:
     """Run argv, stdout and stderr together into log_path, and return the exit code.
 
-    With echo (a text stream), each line is also written there as it arrives, between two rules.
+    With echo (a text stream), each line is also written there as it arrives, between two rules. When argv cannot
+    start, the OSError is raised before any rule is written or log_path is made.
     """
+    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if echo is not None:
         echo.write(opening_rule(log_path.name) + "\n")
         echo.flush()
     last = b"\n"
-    with open(log_path, "wb") as log, subprocess.Popen(
-            argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as proc:
+    with open(log_path, "wb") as log, proc:
         for line in iter(proc.stdout.readline, b""):
             log.write(line)
             last = line
@@ -2257,9 +2306,17 @@ PROJECT_HELP = ("an existing project dir to use in place, as it is: the steps ru
                 "in it; relative to the working directory; takes precedence over setup.project; not with setup.layout")
 
 
+class Parser(argparse.ArgumentParser):
+    """argparse, with a usage error ending in an ERROR: line, as every other error gust prints does."""
+
+    def error(self, message: str):
+        self.print_usage(sys.stderr)
+        self.exit(EXIT_ERROR, f"{ERROR}: {message}\n")
+
+
 def build_parser() -> argparse.ArgumentParser:
     invoked_as = Path(sys.argv[0]).name
-    parser = argparse.ArgumentParser(
+    parser = Parser(
         prog=invoked_as if invoked_as in ("gust", "gust.py") else "gust.py",
         description="Gust, the Gradle User Scenario Tool: set up and run Gradle user scenarios.",
         epilog="Use 'help COMMAND' for a command's options and 'spec' for the scenario file format.",
@@ -2285,7 +2342,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_setup = sub.add_parser("setup", help="lay the project out, and install the wrapper for a version; run no step",
                              description="Lay the project out in the out dir and, with a version in play, install its wrapper. "
-                                         "No step runs. Ends in 'result: set up' or 'result: error'.")
+                                         "No step runs. Ends in 'result: set up' or 'result: ERROR'.")
     scenario_args(p_setup, lays_out=True)
     p_setup.add_argument("--show-output", action="store_true", help=SHOW_OUTPUT_HELP)
     p_run = sub.add_parser(
@@ -2299,7 +2356,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--project", type=Path, metavar="DIR", help=PROJECT_HELP)
     p_run.add_argument("--json", action="store_true", help="print the run summary as JSON on the last line")
     p_run.add_argument("--tail", type=_tail_arg, default=30, metavar="N",
-                       help="how many log lines to show after a deviation or a failed wrapper install (default: 30)")
+                       help="how many log lines to show after an unexpected check or a failed wrapper install (default: 30)")
     p_run.add_argument("--show-output", action="store_true", help=SHOW_OUTPUT_HELP)
     p_run.add_argument("--keep-daemons", action="store_true", help="do not stop Gradle daemons before or after the steps")
     p_run.add_argument("--trace", action="store_true",
@@ -2357,7 +2414,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return EXIT_OK
     if gradle_args and args.command != "run":
-        print(f"error: arguments after -- are accepted by run only ({args.command} runs no Gradle step)", file=sys.stderr)
+        print(f"{ERROR}: arguments after -- are accepted by run only ({args.command} runs no Gradle step)", file=sys.stderr)
         return EXIT_ERROR
     if args.command == "help":
         if args.topic is None:
@@ -2375,9 +2432,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "spec":
         print(FORMAT_SPEC, end="")
         return EXIT_OK
-    if args.command == "zip":
-        return _cli_zip(args)
     try:
+        if args.command == "zip":
+            return _cli_zip(args)
         if args.command == "flat":
             text, source, kwargs = read_source(args)
             print(flatten(text, source, **kwargs), end="")
@@ -2396,9 +2453,9 @@ def main(argv: list[str] | None = None) -> int:
         summary = run_scenario(run, not args.keep_daemons)
         if args.json:
             print(summary.to_json())
-        return {"ok": EXIT_OK, "deviated": EXIT_DEVIATED}.get(summary.status, EXIT_ERROR)
+        return {"success": EXIT_OK, "failure": EXIT_FAILURE}.get(summary.result, EXIT_ERROR)
     except (GustError, OSError) as e:
-        print(f"error: {e}", file=sys.stderr)
+        print(f"{ERROR}: {e}", file=sys.stderr)
         return EXIT_ERROR
 
 
@@ -2455,7 +2512,6 @@ def _cli_check(scenario: Scenario, gradle: str | None, user_home: Path, as_json:
     choice = settle_gradle(scenario, gradle, root, user_home, needed=counts["gradle"] > 0, may_install=True)
     print_header(scenario, None, user_home, choice, sys.stdout, description=True)
     print(f"steps: {len(scenario.steps)} ({', '.join(f'{n} {kind}' for kind, n in counts.items())})")
-    print("result: ok")
     if as_json:
         summary = {"scenario": scenario.name, "description": scenario.description, "gradle": choice.binary,
                    "gradle_version": choice.version, "steps": len(scenario.steps), "step_counts": counts}
@@ -2463,7 +2519,7 @@ def _cli_check(scenario: Scenario, gradle: str | None, user_home: Path, as_json:
             summary["remote"] = {"link": remote.link, "cached": cached}
         if scenario.project is not None:
             summary["project"] = str(scenario.project)
-        summary["status"] = "ok"
+        summary["result"] = "success"
         print(json.dumps(summary))
     return EXIT_OK
 
@@ -2479,25 +2535,23 @@ def _cli_stop_daemons(run: Run, ref: str) -> int:
     if in_place and not (run.out_dir / MARKER).is_file():
         prepare_out(run.out_dir)                       # an out dir for the log; without the marker there is nothing to remove
     print_header(run.scenario, run.out_dir, run.user_home, run.choice, run.out)
-    stopped = _stop_daemons(run, "[STOP]", "stop-daemons.log", full=True)["exit_code"] == 0
-    print(f"result: {'ok' if stopped else 'error'}", file=run.out)
+    stopped = _stop_daemons(run, "[STOP]", "stop-daemons.log", full=True).get("exit_code") == 0
+    if not stopped:
+        print(f"result: {ERROR}", file=run.out)
     print_out(run)
     return EXIT_OK if stopped else EXIT_ERROR
 
 
 def _cli_zip(args) -> int:
-    """Write the reproducer zip and print its path; any failure is one `ERROR: ...` line on stderr, exit code 2."""
-    try:
-        if args.gradle is not None and not VERSION_RE.fullmatch(args.gradle):
-            raise GustError(f"--gradle {args.gradle!r}: a Gradle version such as 9.7.1 is expected "
-                            f"here, for {REPRODUCER}; no Gradle runs for a zip, so a binary is of no use")
-        text, source, kwargs = read_source(args)
-        scenario = _load_named(text, source, **kwargs)
-        target = Path(os.path.abspath(args.output or Path(kwargs.get("default_name", scenario.name) + ".zip")))
-        zip_scenario(scenario, target, args.gradle)
-    except (GustError, OSError) as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return EXIT_ERROR
+    """Write the reproducer zip and print its path. A failure raises, for main's one `ERROR: ...` line on stderr, exit
+    code 2."""
+    if args.gradle is not None and not VERSION_RE.fullmatch(args.gradle):
+        raise GustError(f"--gradle {args.gradle!r}: a Gradle version such as 9.7.1 is expected "
+                        f"here, for {REPRODUCER}; no Gradle runs for a zip, so a binary is of no use")
+    text, source, kwargs = read_source(args)
+    scenario = _load_named(text, source, **kwargs)
+    target = Path(os.path.abspath(args.output or Path(kwargs.get("default_name", scenario.name) + ".zip")))
+    zip_scenario(scenario, target, args.gradle)
     print(target)
     return EXIT_OK
 
@@ -2505,8 +2559,8 @@ def _cli_zip(args) -> int:
 def _cli_setup(run: Run) -> int:
     if run.scenario.project is not None:
         raise GustError(f"nothing to lay out: the project {run.scenario.project} is used in place, as it is")
-    ok = begin(run, needed=False).status != "error"
-    print("result: set up" if ok else "result: error", file=run.out)
+    ok = begin(run, needed=False).result != "error"
+    print("result: set up" if ok else f"result: {ERROR}", file=run.out)
     print_out(run)
     return EXIT_OK if ok else EXIT_ERROR
 

@@ -6,8 +6,8 @@ Write a Gradle user scenario as one TOML file, then run it.
 
 A scenario holds the files of a Gradle project and the steps to run against it:
 Gradle invocations, shell commands, and file edits in between. The project is
-written to disk and the steps run in order, until the first one whose outcome
-differs from what the scenario expects. Gradle output goes to log files, and
+written to disk and the steps run in order, until the first check that comes
+out unexpected. Gradle output goes to log files, and
 with `--show-output` to your terminal too. For agents there are fixed exit
 codes, a JSON summary, and `spec` for the whole file format.
 
@@ -165,7 +165,9 @@ It holds:
 - with `run --trace`, Gradle's build operation trace for each Gradle step, as
   `step-NN-ops-log.txt`
 - the daemon-stop logs
-- `summary.json`, also on stdout with `--json`
+- `summary.json`, also on stdout with `--json`: the run's `result` (`success`,
+  `failure`, or `error`), and each step's, with every check of a run step as
+  `expected` or `unexpected`
 
 The out dir is named in the console header and again on the last line. On a
 rerun it is removed and recreated, but a directory without gust's marker is
@@ -219,9 +221,9 @@ still uses the wrapper, such as `test -x gradlew`, is refused.
 
 | Code | Meaning |
 | --- | --- |
-| `0` | every step went as expected |
-| `1` | a run step deviated from its expectation |
-| `2` | bad input (a failed precondition, a malformed scenario, bad arguments), a step that could not be carried out, or a failed wrapper install |
+| `0` | success: every check came out as expected |
+| `1` | failure: a check came out unexpected |
+| `2` | error: gust could not do something: bad input (a failed precondition, a malformed scenario, bad arguments), a step that could not be carried out, or a failed wrapper install |
 
 The preconditions (Python version, scenario shape, Gradle binary, git) are all
 checked before the out dir is touched. `summary.json` is written for `gust run`
