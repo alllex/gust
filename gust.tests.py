@@ -2126,10 +2126,10 @@ run.shell = "true"
 class ZipTest(GustCase):
     """gust zip: the project's starting state and a REPRODUCER.md in a zip, with no Gradle run."""
 
-    def remote(self, files):
+    def remote(self, files, name="repo"):
         """A local git repository with one commit of files, path -> (git mode, bytes), made with git's plumbing, so
         that any name and mode is possible on any file system. Returns its setup.layout.remote link."""
-        repo = self.tmp / "repo"
+        repo = self.tmp / name                     # a new one for each name: git's objects are read-only on Windows
         env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
 
         def git(*args, data=None):
@@ -2416,16 +2416,13 @@ rm -rf build
         self.assertEqual((entries["case/A.txt"][2], entries["case/a.txt"][2]), (b"upper\n", b"lower\n"))
 
     def test_links_that_leave_the_project_are_refused(self):
-        for target in ("/etc/passwd", "../../outside", "x/../../../y", "C:/x"):            # from sub/: ../a.txt is inside
+        for i, target in enumerate(("/etc/passwd", "../../outside", "x/../../../y", "C:/x")):   # from sub/: ../a.txt is inside
             with self.subTest(target=target):
-                shutil.rmtree(self.tmp / "repo", ignore_errors=True)
-                shutil.rmtree(self.gust, ignore_errors=True)
-                link = self.remote({"sub/l": ("120000", target.encode()), "a.txt": ("100644", b"a\n")})
+                link = self.remote({"sub/l": ("120000", target.encode()), "a.txt": ("100644", b"a\n")}, f"repo{i}")
                 scenario = self.scenario_file(f'setup.layout.remote = "{link}"\n[[steps]]\nrun.gradle = "help"\n', "links.toml")
                 code, out, err = self.cli("zip", str(scenario))
                 self.assertEqual((code, out, err), (gs.EXIT_ERROR, "", f"ERROR: setup.layout.remote: the link 'sub/l' points to {target!r}, outside the project\n"))
-        shutil.rmtree(self.tmp / "repo")
-        link = self.remote({"sub/l": ("120000", b"../a.txt"), "a.txt": ("100644", b"a\n")})
+        link = self.remote({"sub/l": ("120000", b"../a.txt"), "a.txt": ("100644", b"a\n")}, "inside")
         scenario = self.scenario_file(f'setup.layout.remote = "{link}"\n[[steps]]\nrun.gradle = "help"\n', "inside.toml")
         self.assertEqual(self.cli("zip", str(scenario))[0], gs.EXIT_OK)
         self.assertEqual(self.entries(self.tmp / "inside.zip")["inside/sub/l"][:3:2], (0o120777, b"../a.txt"))
