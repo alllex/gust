@@ -929,16 +929,15 @@ def _load_project(value: str | None, base_dir: Path | None, cli: Path | None, ha
     It must be an existing directory, and the scenario may have no setup.layout."""
     if value is None and cli is None:
         return None
-    where = "setup.project" if cli is None else "--project"
+    raw, base, where = (cli, Path.cwd(), "--project") if cli is not None else (value, base_dir, "setup.project")
     if has_layout:
         raise GustError(f"{where} and setup.layout cannot be combined: in place, the project is used as it is")
-    if value == "" and cli is None:
-        raise GustError("setup.project: must not be empty")
-    path = Path(os.path.expanduser(value if cli is None else cli))   # a leading ~ expanded, as for --gradle
-    if not path.is_absolute():
-        base = base_dir if cli is None else Path.cwd()               # --project: relative to the working directory
+    if raw == "":                                                    # never for --project, a Path
+        raise GustError(f"{where}: must not be empty")
+    path = Path(os.path.expanduser(raw))                             # a leading ~ expanded, as for --gradle
+    if not path.is_absolute():                                       # --project: relative to the working directory
         if base is None:
-            raise GustError(f"{where}: {value!r} is relative but the scenario has no directory to resolve it against")
+            raise GustError(f"{where}: {raw!r} is relative but the scenario has no directory to resolve it against")
         path = base / path
     if not path.is_dir():
         raise GustError(f"{where}: no such directory {path}")
