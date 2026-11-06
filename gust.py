@@ -16,7 +16,7 @@ import sys
 
 if sys.version_info < (3, 11):  # ahead of any import that needs 3.11; keep this block old-syntax only
     sys.stderr.write(
-        "gust.py needs Python 3.11 or newer (for tomllib); this is Python %s at %s\n"
+        "ERROR: gust.py needs Python 3.11 or newer (for tomllib); this is Python %s at %s\n"
         % (sys.version.split()[0], sys.executable)
     )
     sys.exit(2)
@@ -443,8 +443,8 @@ Output and log tails sit between two 80-column rule lines: the opening one ends
 in the log file name (or "last K of M lines of <log>"), the closing one is all
 dashes. Commands are shown without the --gradle-user-home pair (or the trace
 properties of --trace). The words EXPECTED, UNEXPECTED, and ERROR go to stdout;
-a precondition failure is a single `error: ...` line on stderr, with nothing on
-stdout. For stop-daemons the console has the header and a full [STOP] block
+a precondition failure is a single `ERROR: ...` line on stderr, with nothing on
+stdout (a usage error has the usage line before it). For stop-daemons the console has the header and a full [STOP] block
 (label, `$` line, `exit=0 in 0.2s -> stop-daemons.log`); on failure the last
 line is `ERROR: exit=N ...`, followed by result: ERROR. On success, check and
 stop-daemons have no result: line.
@@ -558,7 +558,7 @@ Preconditions
 =============
 
 These are checked before the out dir is touched. Any failure means exit code 2
-and one `error: ...` line on stderr; a load error is prefixed with the
+and one `ERROR: ...` line on stderr; a load error is prefixed with the
 scenario's path (or stdin).
 
   - Python 3.11 or newer.
@@ -1941,9 +1941,17 @@ PROJECT_HELP = ("an existing project dir to use in place, as it is: the steps ru
                 "in it; relative to the working directory; takes precedence over setup.project; not with setup.layout")
 
 
+class Parser(argparse.ArgumentParser):
+    """argparse, with a usage error ending in an ERROR: line, as every other error gust prints does."""
+
+    def error(self, message: str):
+        self.print_usage(sys.stderr)
+        self.exit(EXIT_ERROR, f"{ERROR}: {message}\n")
+
+
 def build_parser() -> argparse.ArgumentParser:
     invoked_as = Path(sys.argv[0]).name
-    parser = argparse.ArgumentParser(
+    parser = Parser(
         prog=invoked_as if invoked_as in ("gust", "gust.py") else "gust.py",
         description="Gust, the Gradle User Scenario Tool: set up and run Gradle user scenarios.",
         epilog="Use 'help COMMAND' for a command's options and 'spec' for the scenario file format.",
@@ -2029,7 +2037,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return EXIT_OK
     if gradle_args and args.command != "run":
-        print(f"error: arguments after -- are accepted by run only ({args.command} runs no Gradle step)", file=sys.stderr)
+        print(f"{ERROR}: arguments after -- are accepted by run only ({args.command} runs no Gradle step)", file=sys.stderr)
         return EXIT_ERROR
     if args.command == "help":
         if args.topic is None:
@@ -2068,7 +2076,7 @@ def main(argv: list[str] | None = None) -> int:
             print(summary.to_json())
         return {"success": EXIT_OK, "failure": EXIT_FAILURE}.get(summary.result, EXIT_ERROR)
     except (GustError, OSError) as e:
-        print(f"error: {e}", file=sys.stderr)
+        print(f"{ERROR}: {e}", file=sys.stderr)
         return EXIT_ERROR
 
 
