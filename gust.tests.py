@@ -2754,6 +2754,12 @@ class ColorTest(GustCase):
                 with contextlib.redirect_stderr(usage), self.assertRaises(SystemExit):
                     gs.main(["run", str(s), "--tail", "x"])
                 self.assertIn(f"\n{word}: argument --tail", usage.getvalue(), env)
+                code, out, err = self.cli("zip", str(s), "--gradle", "bin/gradle")         # zip's error, through main
+                self.assertEqual((code, out), (gs.EXIT_ERROR, ""), env)
+                self.assertTrue(err.startswith(f"{word}: --gradle "), (env, err))
+        with mock.patch.dict(os.environ, {"FORCE_COLOR": "1"}):
+            code, out, _ = self.cli("zip", str(s), "-o", str(self.tmp / "r.zip"))
+        self.assertEqual((code, out), (gs.EXIT_OK, f"{self.tmp / 'r.zip'}\n"))                   # the zip's path stays plain
 
 
 class VersionGateTest(unittest.TestCase):
