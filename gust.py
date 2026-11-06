@@ -1378,7 +1378,10 @@ def _apply_edit(project: Path, edit: Edit) -> None:
     path = project / edit.file
     if not path.is_file():
         raise StepError(f"no such file {edit.file}; nothing to edit")
-    text = path.read_bytes().decode("utf-8")                     # as it is: CRLF stays CRLF
+    try:
+        text = path.read_bytes().decode("utf-8")                 # as it is: CRLF stays CRLF
+    except UnicodeDecodeError:
+        raise StepError(f"{edit.file} is not UTF-8 text; nothing to edit") from None
     lines = re.split(r"\r\n|\r|\n", edit.replace)
     pattern = re.compile("(?>\r\n|\r|\n)".join(map(re.escape, lines)))     # a line end matches any kind; atomic: CRLF is one
     n = len(pattern.findall(text))

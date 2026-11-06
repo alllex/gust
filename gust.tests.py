@@ -1014,6 +1014,10 @@ class SetupTest(GustCase):
         with self.assertRaisesRegex(gs.StepError, r"'a' occurs 2 times"):
             gs._apply_edit(self.tmp, gs.Edit(file="f.txt", replace="a", with_="x"))
         self.assertEqual(path.read_bytes(), b"a\r\na\r\n")                                   # untouched on an error
+        path.write_bytes(b"a\xff\r\n")
+        with self.assertRaisesRegex(gs.StepError, r"^f.txt is not UTF-8 text; nothing to edit$"):
+            gs._apply_edit(self.tmp, gs.Edit(file="f.txt", replace="a", with_="x"))
+        self.assertEqual(path.read_bytes(), b"a\xff\r\n")
 
     def delete_dir(self, kind, rel, **kw):
         """_delete_dir in <out>/project, laid out empty on the first call; the error message, or what was done."""
