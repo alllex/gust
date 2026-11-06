@@ -2432,9 +2432,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "spec":
         print(FORMAT_SPEC, end="")
         return EXIT_OK
-    if args.command == "zip":
-        return _cli_zip(args)
     try:
+        if args.command == "zip":
+            return _cli_zip(args)
         if args.command == "flat":
             text, source, kwargs = read_source(args)
             print(flatten(text, source, **kwargs), end="")
@@ -2543,18 +2543,15 @@ def _cli_stop_daemons(run: Run, ref: str) -> int:
 
 
 def _cli_zip(args) -> int:
-    """Write the reproducer zip and print its path; any failure is one `ERROR: ...` line on stderr, exit code 2."""
-    try:
-        if args.gradle is not None and not VERSION_RE.fullmatch(args.gradle):
-            raise GustError(f"--gradle {args.gradle!r}: a Gradle version such as 9.7.1 is expected "
-                            f"here, for {REPRODUCER}; no Gradle runs for a zip, so a binary is of no use")
-        text, source, kwargs = read_source(args)
-        scenario = _load_named(text, source, **kwargs)
-        target = Path(os.path.abspath(args.output or Path(kwargs.get("default_name", scenario.name) + ".zip")))
-        zip_scenario(scenario, target, args.gradle)
-    except (GustError, OSError) as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return EXIT_ERROR
+    """Write the reproducer zip and print its path. A failure raises, for main's one `ERROR: ...` line on stderr, exit
+    code 2."""
+    if args.gradle is not None and not VERSION_RE.fullmatch(args.gradle):
+        raise GustError(f"--gradle {args.gradle!r}: a Gradle version such as 9.7.1 is expected "
+                        f"here, for {REPRODUCER}; no Gradle runs for a zip, so a binary is of no use")
+    text, source, kwargs = read_source(args)
+    scenario = _load_named(text, source, **kwargs)
+    target = Path(os.path.abspath(args.output or Path(kwargs.get("default_name", scenario.name) + ".zip")))
+    zip_scenario(scenario, target, args.gradle)
     print(target)
     return EXIT_OK
 
