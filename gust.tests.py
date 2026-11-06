@@ -18,7 +18,9 @@ import sys
 import tempfile
 import time
 import unittest
+import zipfile
 from pathlib import Path
+from unittest import mock
 
 import gust as gs
 
@@ -1518,7 +1520,7 @@ class CliTest(GustCase):
             code, out, _ = self.cli(*argv)
             self.assertEqual(code, gs.EXIT_OK, argv)
             self.assertIn("usage: gust.py", out)
-            for command in ("run", "check", "setup", "stop-daemons", "flat", "spec", "version", "help"):
+            for command in ("run", "check", "setup", "stop-daemons", "flat", "zip", "spec", "version", "help"):
                 self.assertIn(f" {command} ", out.replace("\n", " ") + " ", command)
         code, out, _ = self.cli("help", "run")
         self.assertEqual(code, gs.EXIT_OK)
@@ -2119,6 +2121,295 @@ run.shell = "true"
         once = gs.flatten(long, "t", base_dir=self.tmp)
         self.assertIn('run.gradle.args = "assemble"\nrun.gradle.expect.output = ["', once)       # too long for one inline table
         self.assertEqual(gs.flatten(once, "t"), once)
+
+
+class ZipTest(GustCase):
+    """gust zip: the project's starting state and a REPRODUCER.md in a zip, with no Gradle run."""
+
+    def setUp(self):
+        super().setUp()
+        self.temp_root = self.tmp / "temp"                  # where the staging dir goes, to see it removed
+        self.temp_root.mkdir()
+        self.addCleanup(setattr, tempfile, "tempdir", tempfile.tempdir)
+        tempfile.tempdir = str(self.temp_root)
+
+    def readme(self, text, gradle_version=None):
+        scenario = gs.load_scenario(text, base_dir=self.tmp)
+        files = gs.project_files(scenario)
+        version = gradle_version or gs._scenario_gradle_version(scenario, files)
+        return gs.render_reproducer(scenario, {rel: data for rel, (_, data) in files.items()}, version)
+
+    def entries(self, zip_path):
+        """name -> (mode, date_time, bytes) of every entry, in the zip's order."""
+        with zipfile.ZipFile(zip_path) as zf:
+            return {i.filename: (i.external_attr >> 16, i.date_time, zf.read(i)) for i in zf.infolist()}
+
+    def run_snippets(self, readme, cwd):
+        """Run each sh block of a REPRODUCER.md in cwd, in order, as a reader would."""
+        for _, body in re.findall(r"^(`{3,})sh\n(.*?)\n\1$", readme, re.M | re.S):
+            subprocess.run(gs.shell_argv(body), cwd=cwd, check=True, capture_output=True)
+
+    def test_each_step_kind(self):
+        text = (
+            'name = "kinds"\ndescription = "Every kind of step."\nsetup.gradle = "9.7.1"\n'
+            '[setup.layout.project]\n"settings.gradle.kts" = "rootProject.name = \\"kinds\\"\\n"\n'
+            '"build.gradle.kts" = "plugins { java }\\n// one\\n// two\\n// three\\n// four\\n"\n'
+            '[[steps]]\nrun.gradle = { args = "build --info", expect = { exit = "fail", output = ["BUILD FAILED", "two\\nlines"], no_output = ["BUILD SUCCESSFUL"] } }\n'
+            '[[steps]]\nname = "shell"\nrun.shell = "./gradlew help && \\"$GRADLE\\" help $GRADLE_ARGS && echo $GRADLE_USER_HOME ./gradlew.bat"\n'
+            '[[steps]]\nwrite = { "src/main/java/A.java" = "class A {}\\n", "notes.txt" = "x\\n" }\n'
+            '[[steps]]\nname = """edit\nthe build"""\nedit = [{ file = "build.gradle.kts", replace = "java", with = "java-library" }]\n'
+            '[[steps]]\nclear = "src/main"\n'
+            '[[steps]]\nwrite."src/main/java/B.java" = "class B {}\\n"\n'
+            '[[steps]]\ndelete = "build"\n'
+        )
+        self.assertEqual(self.readme(text), """\
+# kinds
+
+Every kind of step.
+
+Needs Gradle 9.7.1, as `gradle` on PATH.
+
+## Steps
+
+Run each block from the directory this file is in, in order. What to expect from a block is in its comments.
+
+In the shell steps, Gradle is `$GRADLE`, and any extra arguments are in `$GRADLE_ARGS`. Set them first:
+
+```sh
+GRADLE=gradle
+GRADLE_ARGS=
+```
+
+### 1. Run: gradle build --info
+
+```sh
+# expected to fail
+# expected in the output: BUILD FAILED
+# expected in the output: two
+#   lines
+# not expected in the output: BUILD SUCCESSFUL
+gradle build --info
+```
+
+### 2. shell
+
+```sh
+gradle help && "$GRADLE" help $GRADLE_ARGS && echo $GRADLE_USER_HOME gradle
+```
+
+### 3. Write: A.java, notes.txt
+
+```sh
+mkdir -p src/main/java
+cat > src/main/java/A.java <<'EOF'
+class A {}
+EOF
+cat > notes.txt <<'EOF'
+x
+EOF
+```
+
+### 4. edit ...
+
+```sh
+patch -p1 <<'EOF'
+--- a/build.gradle.kts
++++ b/build.gradle.kts
+@@ -1,4 +1,4 @@
+-plugins { java }
++plugins { java-library }
+ // one
+ // two
+ // three
+EOF
+```
+
+### 5. Clear: src/main
+
+```sh
+rm -rf src/main && mkdir src/main
+```
+
+### 6. Write: B.java
+
+```sh
+mkdir -p src/main/java
+cat > src/main/java/B.java <<'EOF'
+class B {}
+EOF
+```
+
+### 7. Delete: build
+
+```sh
+rm -rf build
+```
+""")
+        self.assertIn("Needs Gradle 8.0, as", self.readme(text, "8.0"))                    # --gradle over the scenario
+        self.assertIn("Needs Gradle, as `gradle` on PATH.", self.readme(text.replace('setup.gradle = "9.7.1"\n', "")))
+
+    def test_writes_that_a_plain_heredoc_cannot_hold(self):
+        contents = {
+            "eof.txt": "line\nEOF\n'EOF'\nEOF2\n",                   # a line that is the delimiter: EOF3
+            "crlf.txt": "one\r\ntwo\r\n",                             # carriage returns: printf, with \r
+            "open.txt": "no final newline, it's $HOME and \\n",      # no final newline: printf '%s'
+            "dash.txt": "-n 100% \\ \x01\r",                          # a leading -, %, a backslash, a control character
+            "empty.txt": "",
+            "tab.txt": "\tindented\n",
+            "fence.md": "```kotlin\nx\n```\n",                        # a longer fence around the block
+        }
+        table = "\n".join(f"{json.dumps(k)} = {json.dumps(v)}" for k, v in contents.items())
+        readme = self.readme(f'[[steps]]\n[steps.write]\n{table}\n')
+        self.assertIn("cat > eof.txt <<'EOF3'\nline\nEOF\n'EOF'\nEOF2\nEOF3\n", readme)
+        self.assertIn("printf 'one\\r\ntwo\\r\n' > crlf.txt\n", readme)
+        self.assertIn("""printf '%s' 'no final newline, it'"'"'s $HOME and \\n' > open.txt\n""", readme)
+        self.assertIn("printf '\\055n 100%% \\\\ \\001\\r' > dash.txt\n", readme)
+        self.assertIn("printf '%s' '' > empty.txt\n", readme)
+        self.assertIn("````sh\n", readme)
+        self.assertNotIn("\r", readme)
+        project = self.tmp / "p"
+        project.mkdir()
+        self.run_snippets(readme, project)
+        for rel, content in contents.items():
+            self.assertEqual((project / rel).read_bytes(), content.encode(), rel)
+
+    def test_edits(self):
+        text = ('[setup.layout.project]\n"open.txt" = "a\\nb"\n"crlf.txt" = "one\\r\\ntwo\\r\\n"\n"same.txt" = "x\\n"\n'
+                '"my file.txt" = "x\\n"\n'
+                '[[steps]]\nedit = [{ file = "open.txt", replace = "b", with = "c" }, { file = "crlf.txt", replace = "two", with = "deux" },'
+                ' { file = "same.txt", replace = "x", with = "x" }, { file = "my file.txt", replace = "x", with = "y" }]\n')
+        readme = self.readme(text)
+        self.assertIn("patch -p1 <<'EOF'\n--- a/open.txt\n+++ b/open.txt\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n"
+                      "+c\n\\ No newline at end of file\nEOF\n", readme)
+        self.assertIn("# the whole file, written anew instead of a diff for patch\nprintf 'one\\r\ndeux\\r\n' > crlf.txt\n", readme)
+        self.assertIn("# same.txt stays as it is: its text is replaced with the same text\n", readme)
+        self.assertIn("cat > 'my file.txt' <<'EOF'\ny\nEOF\n", readme)
+        if shutil.which("patch"):
+            project = self.tmp / "p"
+            project.mkdir()
+            for rel, content in gs.load_scenario(text).files.items():
+                (project / rel).write_bytes(content.encode())
+            self.run_snippets(readme, project)
+            self.assertEqual([(project / f).read_bytes() for f in ("open.txt", "crlf.txt", "same.txt", "my file.txt")],
+                             [b"a\nc", b"one\r\ndeux\r\n", b"x\n", b"y\n"])
+        with self.assertRaises(gs.GustError) as cm:            # a multi-line replace that fits only with CRLF read as LF
+            self.readme('[setup.layout.project]\n"c.txt" = "a\\r\\nb\\r\\n"\n[[steps]]\nedit = [{ file = "c.txt", replace = "a\\nb\\nc", with = "" }]\n')
+        self.assertEqual(str(cm.exception), "steps[1].edit[1].replace: 'a\\nb\\nc' occurs 0 times in c.txt when the step runs; an edit needs exactly one")
+        self.assertIn("# the whole file, written anew instead of a diff for patch\ncat > c.txt <<'EOF'\nb\nEOF\n",
+                      self.readme('[setup.layout.project]\n"c.txt" = "a\\r\\nb\\r\\n"\n[[steps]]\nedit = [{ file = "c.txt", replace = "a\\n", with = "" }]\n'))
+
+    def test_byte_identical_across_runs_and_dirs(self):
+        scenario = self.scenario_file('description = "d"\n[setup.layout.project]\n"b.txt" = "b\\n"\n"a/x.txt" = "x\\n"\n'
+                                      '[[steps]]\nrun.gradle = "help"\n', "same.toml")
+        (self.tmp / "one").mkdir()
+        (self.tmp / "two").mkdir()
+        self.assertEqual(self.cli("zip", str(scenario), "-o", "one/same.zip")[0], gs.EXIT_OK)
+        os.chdir(self.tmp / "two")
+        time.sleep(1.1)                                      # a different second, which a timestamp would show
+        self.assertEqual(self.cli("zip", str(scenario))[0], gs.EXIT_OK)
+        first, second = (self.tmp / "one" / "same.zip").read_bytes(), (self.tmp / "two" / "same.zip").read_bytes()
+        self.assertEqual(first, second)
+        entries = self.entries(self.tmp / "one" / "same.zip")
+        self.assertEqual(list(entries), ["same/", "same/REPRODUCER.md", "same/a/", "same/a/x.txt", "same/b.txt"])
+        self.assertEqual({e[1] for e in entries.values()}, {(1980, 1, 1, 0, 0, 0)})
+        self.assertEqual([e[0] for e in entries.values()], [0o40755, 0o100644, 0o40755, 0o100644, 0o100644])
+        readme = entries["same/REPRODUCER.md"][2].decode()
+        self.assertTrue(readme.startswith("# same\n\nd\n\nNeeds Gradle, as `gradle` on PATH.\n"))
+        self.assertNotIn(str(self.tmp), readme)
+        self.assertNotIn(gs.__version__, readme)
+
+    def test_top_folder_and_stdout(self):
+        scenario = self.scenario_file('[[steps]]\nrun.gradle = "help"\n', "loop.toml")
+        code, out, err = self.cli("zip", str(scenario))
+        self.assertEqual((code, out, err), (gs.EXIT_OK, f"{self.tmp / 'loop.zip'}\n", ""))
+        self.assertEqual(list(self.entries(self.tmp / "loop.zip")), ["loop/", "loop/REPRODUCER.md"])
+        (self.tmp / "desk top").mkdir()
+        code, out, err = self.cli("zip", str(scenario), "-o", str(Path("desk top") / "repro-39193.zip"))
+        self.assertEqual((code, out, err), (gs.EXIT_OK, f"{self.tmp / 'desk top' / 'repro-39193.zip'}\n", ""))
+        self.assertEqual(list(self.entries(self.tmp / "desk top" / "repro-39193.zip")), ["repro-39193/", "repro-39193/REPRODUCER.md"])
+        code, out, err = self.cli("zip", "-", stdin='name = "piped"\n[[steps]]\nrun.gradle = "help"\n')
+        self.assertEqual((code, out, err), (gs.EXIT_OK, f"{self.tmp / 'piped.zip'}\n", ""))
+        self.assertFalse((self.gust / gs.SHARED_HOME).exists())    # no Gradle user home, since no Gradle runs
+        self.assertEqual(list(self.temp_root.iterdir()), [])
+
+    def test_wrapper_left_out_and_remote_files_from_the_commit(self):
+        repo = self.tmp / "repo"
+        (repo / "gradle" / "wrapper").mkdir(parents=True)
+        (repo / "tools").mkdir()
+        (repo / "settings.gradle").write_text("// remote\n")
+        (repo / "keep.txt").write_bytes(b"line\r\n")                 # committed as CRLF, so kept as CRLF
+        (repo / "gradlew").write_text("#!/bin/sh\n")
+        (repo / "gradlew.bat").write_text("@rem\n")
+        (repo / "gradle" / "wrapper" / "gradle-wrapper.jar").write_bytes(b"PK\0\0")
+        (repo / "gradle" / "wrapper" / "gradle-wrapper.properties").write_text(
+            "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14.3-bin.zip\n")
+        (repo / "gradle" / "libs.versions.toml").write_text("[versions]\n")
+        (repo / "tools" / "run.sh").write_text("#!/bin/sh\n")
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+        for args in (["init", "-q"], ["add", "."], ["update-index", "--chmod=+x", "gradlew", "tools/run.sh"],
+                     ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "one"]):
+            subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, env=env)
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+        scenario = self.scenario_file(f'setup.gradle = "wrapper"\nsetup.layout.remote = "{repo.as_posix()}#{sha}"\n'
+                                      '[setup.layout.project]\n"tools/run.sh" = "#!/bin/sh\\necho own\\n"\n'
+                                      '[[steps]]\nrun.shell = "./gradlew test"\n', "remote.toml")
+        code, out, err = self.cli("zip", str(scenario))
+        self.assertEqual((code, err), (gs.EXIT_OK, ""), err)
+        entries = self.entries(self.tmp / "remote.zip")
+        self.assertEqual(list(entries), ["remote/", "remote/REPRODUCER.md", "remote/gradle/", "remote/gradle/libs.versions.toml",
+                                         "remote/keep.txt", "remote/settings.gradle", "remote/tools/", "remote/tools/run.sh"])
+        self.assertEqual(entries["remote/tools/run.sh"][0], 0o100755)            # the executable bit of the commit
+        self.assertEqual(entries["remote/tools/run.sh"][2], b"#!/bin/sh\necho own\n")   # the layout's file, over the remote's
+        self.assertEqual(entries["remote/keep.txt"][2], b"line\r\n")
+        readme = entries["remote/REPRODUCER.md"][2].decode()
+        self.assertIn("Needs Gradle 8.14.3, as `gradle` on PATH.\n", readme)    # from the wrapper's distributionUrl
+        self.assertIn("```sh\ngradle test\n```", readme)
+        self.assertNotIn(repo.as_posix(), readme)
+        self.assertNotIn(sha, readme)
+        scenario.write_text(scenario.read_text() + '[[steps]]\nedit = [{ file = "gradle/wrapper/gradle-wrapper.properties", replace = "8", with = "9" }]\n')
+        code, out, err = self.cli("zip", str(scenario), "-o", "edited.zip")
+        self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
+        self.assertEqual(err, "ERROR: steps[2].edit[1].file: 'gradle/wrapper/gradle-wrapper.properties' is left out of the zip "
+                              "with the wrapper, so it cannot be edited there\n")
+        self.assertFalse((self.tmp / "edited.zip").exists())
+
+    def test_refusals(self):
+        scenario = self.scenario_file('[[steps]]\nrun.gradle = "help"\n', "s.toml")
+        (self.tmp / "s.zip").write_text("mine")
+        code, out, err = self.cli("zip", str(scenario))
+        self.assertEqual((code, out, err), (gs.EXIT_ERROR, "", f"ERROR: {self.tmp / 's.zip'} exists\n"))
+        self.assertEqual((self.tmp / "s.zip").read_text(), "mine")
+        code, out, err = self.cli("zip", str(scenario), "-o", "missing/s.zip")
+        self.assertEqual((code, out, err), (gs.EXIT_ERROR, "", f"ERROR: no such directory {self.tmp / 'missing'} for the zip\n"))
+        (self.tmp / "app").mkdir()
+        in_place = self.scenario_file('setup.project = "app"\n[[steps]]\nrun.gradle = "help"\n', "in-place.toml")
+        code, out, err = self.cli("zip", str(in_place))
+        self.assertEqual((code, out, err), (gs.EXIT_ERROR, "", f"ERROR: nothing to zip: the project {self.tmp / 'app'} is used in place, as it is\n"))
+        for value in ("./gradlew", "gecho", str(self.gecho)):
+            code, out, err = self.cli("zip", str(scenario), "-o", "v.zip", "--gradle", value)
+            self.assertEqual((code, out), (gs.EXIT_ERROR, ""), value)
+            self.assertTrue(err.startswith(f"ERROR: --gradle {value!r}: a Gradle version such as 9.7.1 is expected here"), err)
+        self.assertEqual(self.cli("zip", str(scenario), "-o", "v.zip", "--gradle", "9.8.0-rc-2")[0], gs.EXIT_OK)
+        own = self.scenario_file('[setup.layout.project]\n"REPRODUCER.md" = "x"\n[[steps]]\nrun.gradle = "help"\n', "own.toml")
+        self.assertEqual(self.cli("zip", str(own)), (gs.EXIT_ERROR, "", "ERROR: the project has a REPRODUCER.md of its own, where the zip's REPRODUCER.md goes\n"))
+        self.assertEqual(sorted(p.name for p in self.tmp.glob("*.zip")), ["s.zip", "v.zip"])
+        self.assertEqual(list(self.temp_root.iterdir()), [])
+
+    def test_a_failure_leaves_no_zip_and_no_temp_dir(self):
+        scenario = self.scenario_file('[setup.layout.project]\n"a.txt" = "a\\n"\n[[steps]]\nrun.gradle = "help"\n', "s.toml")
+        staged = []
+        real_writestr = zipfile.ZipFile.writestr
+
+        def failing_writestr(zf, info, data, **kw):
+            staged.extend(p.name for p in self.temp_root.iterdir())
+            real_writestr(zf, info, data, **kw)
+            raise OSError(28, "No space left on device")
+        with mock.patch.object(zipfile.ZipFile, "writestr", failing_writestr):
+            code, out, err = self.cli("zip", str(scenario))
+        self.assertEqual((code, out, err), (gs.EXIT_ERROR, "", "ERROR: [Errno 28] No space left on device\n"))
+        self.assertEqual(len(staged), 1)                          # the staging dir was there while the zip was written
+        self.assertFalse((self.tmp / "s.zip").exists())
+        self.assertEqual(list(self.temp_root.iterdir()), [])
 
 
 class WindowsTest(GustCase):
