@@ -2231,10 +2231,7 @@ class ZipTest(GustCase):
         return f"{repo.as_posix()}#{git('rev-parse', 'HEAD')}"
 
     def readme(self, text, gradle_version=None):
-        scenario = gs.load_scenario(text, base_dir=self.tmp)
-        files = gs.project_files(scenario)
-        version = gradle_version or gs._scenario_gradle_version(scenario, files)
-        return gs.render_reproducer(scenario, {rel: data for rel, (_, data) in files.items()}, version)
+        return gs.zip_files(gs.load_scenario(text, base_dir=self.tmp), gradle_version)[gs.REPRODUCER][1].decode("utf-8")
 
     def entries(self, zip_path):
         """name -> (mode, date_time, bytes) of every entry, in the zip's order."""

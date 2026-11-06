@@ -2078,6 +2078,12 @@ def zip_scenario(scenario: Scenario, target: Path, gradle_version: str | None = 
     if not target.parent.is_dir():
         raise GustError(f"no such directory {target.parent} for the zip")
     fetch_remote(scenario)
+    _write_zip(target, top, zip_files(scenario, gradle_version))
+
+
+def zip_files(scenario: Scenario, gradle_version: str | None = None) -> dict[str, tuple[int, bytes]]:
+    """What goes into the zip's folder, path -> (mode, bytes): the project's starting state without the wrapper, and
+    REPRODUCER.md. A remote must be fetched by then."""
     files = project_files(scenario)
     version = gradle_version or _scenario_gradle_version(scenario, files)
     files = {rel: f for rel, f in files.items() if not _is_wrapper(rel)}
@@ -2085,7 +2091,7 @@ def zip_scenario(scenario: Scenario, target: Path, gradle_version: str | None = 
         raise GustError(f"the project has a {REPRODUCER} of its own, where the zip's {REPRODUCER} goes")
     readme = render_reproducer(scenario, {rel: data for rel, (_, data) in files.items()}, version)
     files[REPRODUCER] = (FILE_MODE, readme.encode("utf-8"))
-    _write_zip(target, top, files)
+    return files
 
 
 def project_files(scenario: Scenario) -> dict[str, tuple[int, bytes]]:
