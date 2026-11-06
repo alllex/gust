@@ -214,8 +214,10 @@ steps[].run.*.expect                what must hold after the step; every listed 
 steps[].edit[]
   file          string   required   a file from the project table, the remote checkout, the
                                     project dir in place, or an earlier write step
-  replace       string   required   non-empty; must occur exactly once in the file when the step runs
-  with          string   required   the replacement text
+  replace       string   required   non-empty; must occur exactly once in the file when the step runs,
+                                    where a line end matches CRLF and LF alike
+  with          string   required   the replacement text; its line ends are written as the file's
+                                    when the file has only CRLF or only LF, else as they are
 
 The run stops at the first run step that fails a check (a deviation), or at a
 write, edit, delete, or clear that cannot be applied (an error).
@@ -1375,11 +1377,23 @@ def _apply_edit(project: Path, edit: Edit) -> None:
     path = project / edit.file
     if not path.is_file():
         raise StepError(f"no such file {edit.file}; nothing to edit")
-    text = path.read_text(encoding="utf-8")
-    n = text.count(edit.replace)
+    text = path.read_bytes().decode("utf-8")                     # as it is: CRLF stays CRLF
+    lines = edit.replace.replace("\r\n", "\n").split("\n")
+    pattern = re.compile("\r?\n".join(map(re.escape, lines)))     # a line end matches either kind
+    n = len(pattern.findall(text))
     if n != 1:
         raise StepError(f"{edit.replace!r} occurs {n} times in {edit.file}; an edit needs exactly one")
-    path.write_text(text.replace(edit.replace, edit.with_), encoding="utf-8", newline="")
+    with_ = edit.with_
+    if eol := _line_end(text):                                   # written in the file's own line end
+        with_ = with_.replace("\r\n", "\n").replace("\n", eol)
+    path.write_text(pattern.sub(lambda _: with_, text), encoding="utf-8", newline="")
+
+
+def _line_end(text: str) -> str | None:
+    """The line end of a file with one kind, "\\r\\n" or "\\n"; None for a file with both kinds, or none."""
+    crlf = text.count("\r\n")
+    lf = text.count("\n") - crlf
+    return "\r\n" if crlf and not lf else "\n" if lf and not crlf else None
 
 
 def _delete_dir(run: Run, step: DeleteStep) -> str:

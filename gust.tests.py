@@ -980,9 +980,35 @@ class SetupTest(GustCase):
         self.assertEqual((project / "top.txt").read_text(), "t")
         self.assertEqual((project / "lf.txt").read_bytes(), b"1\n2\r\n")                  # as written, on Windows too
         gs._apply_edit(project, s.steps[0].edits[0])
-        self.assertEqual((project / "lf.txt").read_bytes(), b"one\n2\n")                   # after an edit: LF, everywhere
+        self.assertEqual((project / "lf.txt").read_bytes(), b"one\n2\r\n")                 # after an edit: line ends kept, everywhere
         self.assertEqual((self.out_dir / gs.MARKER).read_text(),
                          "Marker for gust: this directory was produced by gust and may be replaced or removed by a later run.\n")
+
+    def test_edit_keeps_line_ends(self):
+        path = self.tmp / "f.txt"
+        for before, replace, with_, after in [
+            (b"a\r\nb\r\nc\r\n", "a\nb", "x\ny\nz", b"x\r\ny\r\nz\r\nc\r\n"),      # CRLF: \n in replace and with stands for CRLF
+            (b"a\r\nb\r\nc\r\n", "c", "d", b"a\r\nb\r\nd\r\n"),                       # the rest of the file is left as it is
+            (b"a\r\nb\r\n", "a\r\nb", "x\r\ny", b"x\r\ny\r\n"),                       # \r\n written out means the same
+            (b"a\r\nb", "b", "b\nc", b"a\r\nb\r\nc"),                                 # no final line end
+            (b"a\rb\r\nc\r\n", "c", "d", b"a\rb\r\nd\r\n"),                           # a lone \r is not a line end
+            (b"a\nb\nc\n", "b\nc", "y\n", b"a\ny\n\n"),                               # LF
+            (b"a\nb\n", "a\r\nb", "x\r\ny", b"x\ny\n"),                               # LF: \r\n stands for LF
+            (b"a\nb", "a\nb", "c", b"c"),                                             # no final line end
+            (b"abc", "b", "1\n2", b"a1\n2c"),                                         # no line end at all: as written
+            (b"a\nb\r\nc\n", "b\nc", "B\nC", b"a\nB\nC\n"),                           # both kinds: with as written
+            (b"a\r\nb\nc\n", "a\r\nb", "x\r\ny", b"x\r\ny\nc\n"),
+        ]:
+            path.write_bytes(before)
+            gs._apply_edit(self.tmp, gs.Edit(file="f.txt", replace=replace, with_=with_))
+            self.assertEqual(path.read_bytes(), after, (before, replace, with_))
+        path.write_bytes(b"a\r\nb\na\nb\n")
+        with self.assertRaisesRegex(gs.StepError, r"'a\\nb' occurs 2 times in f.txt"):       # a line end matches either kind
+            gs._apply_edit(self.tmp, gs.Edit(file="f.txt", replace="a\nb", with_="x"))
+        path.write_bytes(b"a\r\na\r\n")
+        with self.assertRaisesRegex(gs.StepError, r"'a' occurs 2 times"):
+            gs._apply_edit(self.tmp, gs.Edit(file="f.txt", replace="a", with_="x"))
+        self.assertEqual(path.read_bytes(), b"a\r\na\r\n")                                   # untouched on an error
 
     def delete_dir(self, kind, rel, **kw):
         """_delete_dir in <out>/project, laid out empty on the first call; the error message, or what was done."""
