@@ -216,8 +216,9 @@ steps[].edit[]
                                     project dir in place, or an earlier write step
   replace       string   required   non-empty; must occur exactly once in the file when the step runs,
                                     where a line end matches CRLF, LF and CR alike
-  with          string   required   the replacement text; its line ends are written as the file's
-                                    when the file has only CRLF or only LF, else as they are
+  with          string   required   the replacement text, written as it is, except that in a file
+                                    with only CRLF or only LF line ends, each \\n not after a \\r
+                                    is written as the file's line end
 
 The run stops at the first run step that fails a check (a deviation), or at a
 write, edit, delete, or clear that cannot be applied (an error).
@@ -1384,8 +1385,8 @@ def _apply_edit(project: Path, edit: Edit) -> None:
     if n != 1:
         raise StepError(f"{edit.replace!r} occurs {n} times in {edit.file}; an edit needs exactly one")
     with_ = edit.with_
-    if eol := _line_end(text):                                   # written in the file's own line end
-        with_ = with_.replace("\r\n", "\n").replace("\n", eol)
+    if eol := _line_end(text):                                   # a bare \n written as the file's own line end
+        with_ = re.sub(r"(?<!\r)\n", lambda _: eol, with_)
     path.write_text(pattern.sub(lambda _: with_, text), encoding="utf-8", newline="")
 
 

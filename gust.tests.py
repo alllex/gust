@@ -987,7 +987,7 @@ class SetupTest(GustCase):
     def test_edit_keeps_line_ends(self):
         path = self.tmp / "f.txt"
         for before, replace, with_, after in [
-            (b"a\r\nb\r\nc\r\n", "a\nb", "x\ny\nz", b"x\r\ny\r\nz\r\nc\r\n"),      # CRLF: \n in replace and with stands for CRLF
+            (b"a\r\nb\r\nc\r\n", "a\nb", "x\ny\nz", b"x\r\ny\r\nz\r\nc\r\n"),      # CRLF: a bare \n in with stands for CRLF
             (b"a\r\nb\r\nc\r\n", "c", "d", b"a\r\nb\r\nd\r\n"),                       # the rest of the file is left as it is
             (b"a\r\nb\r\n", "a\r\nb", "x\r\ny", b"x\r\ny\r\n"),                       # \r\n written out means the same
             (b"a\r\nb", "b", "b\nc", b"a\r\nb\r\nc"),                                 # no final line end
@@ -997,9 +997,10 @@ class SetupTest(GustCase):
             (b"a\r\nb\r\n", "\nb", "\nc", b"a\r\nc\r\n"),                         # replace starting with a line end
             ("\u00e9\r\n\u20ac\r\n".encode(), "\u00e9\n\u20ac", "\u20ac\n\u00e9", "\u20ac\r\n\u00e9\r\n".encode()),   # multi-byte UTF-8
             (b"a\nb\nc\n", "b\nc", "y\n", b"a\ny\n\n"),                               # LF
-            (b"a\nb\n", "a\r\nb", "x\r\ny", b"x\ny\n"),                               # LF: \r\n stands for LF
+            (b"a\nb\n", "a\r\nb", "x\r\ny", b"x\r\ny\n"),                             # LF: \r\n in with is written as it is
             (b"a\nb", "a\nb", "c", b"c"),                                             # no final line end
             (b"abc", "b", "1\n2", b"a1\n2c"),                                         # no line end at all: as written
+            (b"abc", "b", "1\r\n2", b"a1\r\n2c"),
             (b"a\nb\r\nc\n", "b\nc", "B\nC", b"a\nB\nC\n"),                           # both kinds: with as written
             (b"a\r\nb\nc\n", "a\r\nb", "x\r\ny", b"x\r\ny\nc\n"),
         ]:
