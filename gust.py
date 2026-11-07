@@ -892,14 +892,13 @@ def check_file_flow(scenario: Scenario) -> None:
     root = scenario.remote.source if scenario.remote else scenario.project
     files: dict[str, str] = {}   # path -> where it first appears
     dirs: dict[str, str] = {}    # known dir -> why it is one: a file under it and where that appears, or a delete or clear
-    gone: list[tuple[str, ...]] = []           # the parts of each dir deleted or cleared so far
+    gone: list[str] = []                        # each dir deleted or cleared so far
     folded: dict[str, str] = {}                 # each path in files and dirs, case-folded -> as it is there
     on_disk = "setup.layout.remote" if scenario.project is None else str(scenario.project)
 
     def same_case(path: str, where: str) -> None:
         """Refuse a path, or a dir above it, that differs in case only from one in files or dirs."""
-        parts = path.split("/")
-        for p in ("/".join(parts[:k]) for k in range(1, len(parts) + 1)):
+        for p in (*_parents(path), path):
             if folded.get(p.casefold(), p) != p:
                 raise GustError(f"{where}: {p!r} and {folded[p.casefold()]!r} differ in case only, "
                                 f"so they are one path on macOS and Windows")
@@ -907,15 +906,13 @@ def check_file_flow(scenario: Scenario) -> None:
     def seen(rel: str) -> bool:
         """Whether the checkout or the project dir in place has that file, and it is not under a dir deleted or cleared
         by then."""
-        return root is not None and (root / rel).is_file() and not any(Path(rel).parts[:len(g)] == g for g in gone)
+        return root is not None and (root / rel).is_file() and not any(_under(rel, g) for g in gone)
 
     def add(path: str, where: str) -> None:
         same_case(path, where)
         if path in dirs:
             raise GustError(f"{where}: {path!r} is a directory ({dirs[path]})")
-        parts = Path(path).parts
-        for k in range(1, len(parts)):
-            ancestor = "/".join(parts[:k])
+        for ancestor in _parents(path):
             if ancestor in files or seen(ancestor):
                 origin = files.get(ancestor, on_disk)
                 raise GustError(f"{where}: {path!r} conflicts with {ancestor!r} ({origin}); one is a directory of the other")
@@ -937,18 +934,29 @@ def check_file_flow(scenario: Scenario) -> None:
                     raise GustError(f"steps[{i}].edit[{j}].file: {edit.file!r} is not in "
                                     f"{'the layout' if scenario.project is None else scenario.project} and no earlier step writes it")
         elif isinstance(step, DeleteStep):
-            where, parts = f"steps[{i}].{step.kind}", Path(step.dir).parts
+            where = f"steps[{i}].{step.kind}"
             same_case(step.dir, where)
             if step.dir in files or seen(step.dir):
                 raise GustError(f"{where}: {step.dir!r} is a file ({files.get(step.dir, on_disk)}), not a directory")
-            for path in [p for p in (*files, *dirs) if Path(p).parts[:len(parts)] == parts]:
+            for path in [p for p in (*files, *dirs) if _under(p, step.dir)]:
                 files.pop(path, None)
                 dirs.pop(path, None)
                 folded.pop(path.casefold(), None)
-            for k in range(1, len(parts) + (step.kind == "clear")):   # the dirs above it, and a cleared dir itself
-                dirs["/".join(parts[:k])] = f"after {where}"
-                folded["/".join(parts[:k]).casefold()] = "/".join(parts[:k])
-            gone.append(parts)
+            for d in _parents(step.dir) + ([step.dir] if step.kind == "clear" else []):   # those above it, and a cleared one
+                dirs[d] = f"after {where}"
+                folded[d.casefold()] = d
+            gone.append(step.dir)
+
+
+def _parents(rel: str) -> list[str]:
+    """The dirs above a path with forward slashes, top down: _parents("a/b/c") == ["a", "a/b"]."""
+    parts = rel.split("/")
+    return ["/".join(parts[:k]) for k in range(1, len(parts))]
+
+
+def _under(rel: str, top: str) -> bool:
+    """Whether a path is the dir top or inside it, both with forward slashes."""
+    return rel == top or rel.startswith(top + "/")
 
 
 def _load_layout(raw: object, base_dir: Path | None) -> tuple[dict[str, str], Remote | None]:
@@ -2262,7 +2270,7 @@ def _write_zip(target: Path, top: str, files: dict[str, tuple[int, bytes]]) -> N
     """Zip the files under top/ into a new file at target: entries sorted, each dated ZIP_DATE, with Unix modes
     (executable or not, or a link). The file is created only if it is not there yet, and removed again if anything
     fails."""
-    dirs = {top} | {"/".join([top, *rel.split("/")[:k]]) for rel in files for k in range(1, rel.count("/") + 1)}
+    dirs = {top} | {f"{top}/{d}" for rel in files for d in _parents(rel)}
     entries = sorted([(d + "/", DIR_MODE, b"") for d in dirs] + [(f"{top}/{rel}", mode, data) for rel, (mode, data) in files.items()])
     created = False
     try:
@@ -2305,7 +2313,7 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
         out += ["In the shell steps, Gradle is `$GRADLE`, and any extra arguments are in `$GRADLE_ARGS`. Set them first:",
                 "", "```sh", "GRADLE=gradle", "GRADLE_ARGS=", "```", ""]
     files = dict(files)
-    dirs = {"/".join(rel.split("/")[:k]) for rel in files for k in range(1, rel.count("/") + 1)}
+    dirs = {d for rel in files for d in _parents(rel)}
     for i, step in enumerate(scenario.steps, start=1):
         body: list[str] = []
         commands: list[Command] = []                         # a file step's commands, joined with && below
@@ -2327,7 +2335,7 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
                 parent = rel.rpartition("/")[0]
                 if parent and parent not in dirs:
                     commands.append(([f"mkdir -p {_sh_path(parent)}"], 0))
-                    dirs |= {"/".join(parent.split("/")[:k]) for k in range(1, parent.count("/") + 2)}
+                    dirs |= set(_parents(rel))
                 commands.append(_sh_write(rel, content))
                 files[rel] = content.encode("utf-8")
         elif isinstance(step, EditStep):
@@ -2351,9 +2359,8 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
                 raise GustError(f"steps[{i}].{step.kind}: {step.dir!r} is where the zip's {SCENARIO_MD} goes")
             q = _sh_path(step.dir)
             commands.append(([f"rm -rf {q}" if step.kind == "delete" else f"rm -rf {q} && mkdir {q}"], 0))
-            prefix = step.dir + "/"
-            files = {rel: data for rel, data in files.items() if not rel.startswith(prefix)}
-            dirs = {d for d in dirs if d != step.dir and not d.startswith(prefix)} | ({step.dir} if step.kind == "clear" else set())
+            files = {rel: data for rel, data in files.items() if not _under(rel, step.dir)}
+            dirs = {d for d in dirs if not _under(d, step.dir)} | ({step.dir} if step.kind == "clear" else set())
         body += _chained(commands)
         heading = _visible(label or step.label()).strip()
         if "\n" in heading:
