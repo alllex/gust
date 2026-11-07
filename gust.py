@@ -863,16 +863,17 @@ def load_scenario(text: str, base_dir: Path | None = None, default_name: str | N
     scenario = Scenario(name=name, description=description, files=files, steps=steps, remote=remote, gradle=gradle,
                         project=project)
     if remote is None:
-        check_file_flow(scenario, lambda rel: project is not None and (project / rel).is_file())
+        check_file_flow(scenario)
     return scenario
 
 
-def check_file_flow(scenario: Scenario, exists) -> None:
+def check_file_flow(scenario: Scenario) -> None:
     """Check that every edit's file exists by then, that the path of every delete or clear is a directory, and that no
     path is both a file and a directory.
 
-    exists(rel) is whether the remote checkout or the project dir in place, if any, has that file.
+    The files on disk are those of the remote checkout, which must be fetched by then, or of the project dir in place.
     """
+    root = scenario.remote.source if scenario.remote else scenario.project
     files: dict[str, str] = {}   # path -> where it first appears
     dirs: dict[str, str] = {}    # known dir -> why it is one: a file under it and where that appears, or a delete or clear
     gone: list[tuple[str, ...]] = []           # the parts of each dir deleted or cleared so far
@@ -881,7 +882,7 @@ def check_file_flow(scenario: Scenario, exists) -> None:
     def seen(rel: str) -> bool:
         """Whether the checkout or the project dir in place has that file, and it is not under a dir deleted or cleared
         by then."""
-        return exists(rel) and not any(Path(rel).parts[:len(g)] == g for g in gone)
+        return root is not None and (root / rel).is_file() and not any(Path(rel).parts[:len(g)] == g for g in gone)
 
     def add(path: str, where: str) -> None:
         if path in dirs:
@@ -940,16 +941,17 @@ def _load_project(value: str | None, base_dir: Path | None, cli: Path | None, ha
     It must be an existing directory, and the scenario may have no setup.layout."""
     if value is None and cli is None:
         return None
-    where = "setup.project" if cli is None else "--project"
+    raw, base, where = (cli, None, "--project") if cli is not None else (value, base_dir, "setup.project")
     if has_layout:
         raise GustError(f"{where} and setup.layout cannot be combined: in place, the project is used as it is")
-    if value == "" and cli is None:
-        raise GustError("setup.project: must not be empty")
-    path = Path(os.path.expanduser(value if cli is None else cli))   # a leading ~ expanded, as for --gradle
+    if raw == "":                                                    # never for --project, a Path
+        raise GustError(f"{where}: must not be empty")
+    path = Path(os.path.expanduser(raw))                             # a leading ~ expanded, as for --gradle
     if not path.is_absolute():
-        base = base_dir if cli is None else Path.cwd()               # --project: relative to the working directory
-        if base is None:
-            raise GustError(f"{where}: {value!r} is relative but the scenario has no directory to resolve it against")
+        if cli is not None:
+            base = Path.cwd()                                        # --project: relative to the working directory
+        elif base is None:
+            raise GustError(f"{where}: {raw!r} is relative but the scenario has no directory to resolve it against")
         path = base / path
     if not path.is_dir():
         raise GustError(f"{where}: no such directory {path}")
@@ -1220,7 +1222,7 @@ def fetch_remote(scenario: Scenario, out=None) -> dict | None:
     target = remote.dir
     fetched = False
     if (target / ".git").exists():
-        head = _git(target, "rev-parse", "HEAD").strip()
+        head = _git(target, "rev-parse", "HEAD").decode().strip()
         if not head.startswith(remote.sha) and not remote.sha.startswith(head):
             raise GustError(f"checkout {target} is at {head[:12]}, not {remote.sha}; delete it to refetch")
         if not remote.source.is_dir():
@@ -1244,17 +1246,17 @@ def fetch_remote(scenario: Scenario, out=None) -> dict | None:
             rmtree(target, ignore_errors=True)
             raise
         fetched = True
-    check_file_flow(scenario, lambda rel: (remote.source / rel).is_file())
+    check_file_flow(scenario)
     return {"link": remote.link, "checkout": str(target), "fetched": fetched}
 
 
-def _git(cwd: Path, *args: str, check: bool = True) -> str | None:
-    """git's stdout, run in cwd. On failure: GustError, or None when check is False."""
-    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+def _git(cwd: Path, *args: str, check: bool = True, input: bytes | None = None) -> bytes | None:
+    """git's stdout as bytes, run in cwd with input on stdin. On failure: GustError, or None when check is False."""
+    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, input=input)
     if proc.returncode != 0:
         if not check:
             return None
-        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        detail = (proc.stderr or proc.stdout).decode(errors="replace").strip().splitlines()
         raise GustError(f"git {args[0]} failed in {cwd}: {detail[-1] if detail else 'exit ' + str(proc.returncode)}")
     return proc.stdout
 
@@ -1357,20 +1359,16 @@ SETTINGS_FILES = ("settings.gradle", "settings.gradle.kts", "settings.gradle.dcl
 class GradleChoice:
     """The Gradle the steps run with, settled before the out dir is touched."""
     binary: str
-    source: str                        # "default", "scenario" (setup.gradle), or "cli" (--gradle)
+    source: str                        # as on the header line: "default", "scenario" (setup.gradle), or "--gradle"
     version: str | None = None         # from the --version probe, or the version to install as given
     install: bool = False              # a wrapper for version is installed first, with gradle from PATH
-    unchecked: str | None = None       # check only: why nothing was probed (the remote is not cached)
+    unchecked: bool = False            # check only: nothing was probed, since the remote is not cached
 
     @property
     def note(self) -> str:
         """The parenthetical of the gradle: header line."""
-        note = {"cli": "--gradle", "scenario": "scenario", "default": "default"}[self.source]
-        if self.install:
-            note += ", installed by gradle"
-        if self.unchecked:
-            note += f"; not checked, {self.unchecked}"
-        return note
+        return (self.source + (", installed by gradle" if self.install else "")
+                + ("; not checked, remote not cached" if self.unchecked else ""))
 
     @property
     def header(self) -> str:
@@ -1396,24 +1394,25 @@ def settle_gradle(scenario: Scenario, cli_value: str | None, root: Path | None, 
     def exists(rel: str) -> bool:
         return rel in scenario.files or (root is not None and (root / rel).is_file())
 
+    unfetched = root is None and scenario.remote is not None              # check with an unfetched remote
     if cli_value is None:
         source = "scenario" if scenario.gradle is not None else "default"
         install = scenario.gradle if scenario.gradle not in (None, "wrapper") else None
         if scenario.gradle is not None:
             binary = WRAPPER
-        elif root is None and scenario.remote is not None and needed:      # check with an unfetched remote: unknown
-            return GradleChoice("gradle", source, unchecked="remote not cached")
+        elif unfetched and needed:                                         # whether it has a wrapper is unknown
+            return GradleChoice("gradle", source, unchecked=True)
         else:                                                              # the project's own wrapper, else PATH
             binary = WRAPPER if root is not None and _executable(root / WRAPPER_FILE) else "gradle"
         label = binary if install is None else f"setup.gradle {install!r}"
     else:
-        source = "cli"
+        source = "--gradle"
         binary, install = _settle_binary(cli_value, exists)
         label = f"--gradle {cli_value!r}"
     if install is not None and scenario.project is not None:
         raise GustError(f"{label} is a version, but no wrapper is installed into a project in place; pass a binary")
     if install is not None and not may_install:
-        if source == "cli":
+        if cli_value is not None:
             raise GustError(f"--gradle {cli_value!r} is a version, but nothing is installed here; pass a binary (a name or a path)")
         install = None                                                   # set up already: the version's wrapper is in place
     if not (needed or cli_value is not None or install is not None):
@@ -1421,21 +1420,19 @@ def settle_gradle(scenario: Scenario, cli_value: str | None, root: Path | None, 
     if install is not None:
         if shutil.which("gradle") is None:
             raise GustError("a Gradle version was requested but no 'gradle' is on PATH to install its wrapper")
-        if root is None and scenario.remote is not None:                 # check with an unfetched remote
-            return GradleChoice(WRAPPER, source, version=install, install=True, unchecked="remote not cached")
+        if unfetched:
+            return GradleChoice(WRAPPER, source, version=install, install=True, unchecked=True)
         if not any(exists(f) for f in SETTINGS_FILES):
             raise GustError(f"{label}: a wrapper can only be installed into a Gradle build; add a settings file to the layout")
         return GradleChoice(WRAPPER, source, version=install, install=True)
+    if binary.startswith("./") and unfetched:                            # project-relative, the wrapper included
+        return GradleChoice(binary, source, unchecked=True)
     if cli_value is None:                                                # the default must be usable
-        if binary == WRAPPER and root is None and scenario.remote is not None:
-            return GradleChoice(binary, source, unchecked="remote not cached")
         if binary == WRAPPER and not exists(WRAPPER_FILE):
             raise GustError(f'setup.gradle = "wrapper" but {WRAPPER_FILE} is not among the project\'s files')
         if binary != WRAPPER and shutil.which(binary) is None:
             raise GustError(f"'{binary}' is not on PATH")
     if binary.startswith("./") and root is None:                         # project-relative, with nothing on disk yet
-        if scenario.remote is not None:
-            return GradleChoice(binary, source, unchecked="remote not cached")
         raise GustError("the wrapper's gradle/wrapper/gradle-wrapper.jar cannot come from an inline layout; use setup.layout.remote")
     return GradleChoice(binary, source, version=probe_gradle(binary, label, root if root is not None else Path.cwd(), user_home))
 
@@ -1633,7 +1630,6 @@ class Run:
         if self.out is None:
             self.out = sys.stdout
         self.color = color_on(self.out)
-        self.user_home.mkdir(parents=True, exist_ok=True)
 
     @property
     def project(self) -> Path:
@@ -1648,6 +1644,10 @@ class Run:
 
     def command(self, args: str, trace: Path | None = None) -> GradleCommand:
         return GradleCommand(self.choice.binary, args, self.user_home, trace)
+
+    def error(self, message: str) -> None:
+        """An `ERROR: <message>` line on the console."""
+        print(f"{paint(ERROR, self.color)}: {message}", file=self.out)
 
 
 def _for_bash(binary: str) -> str:
@@ -1681,8 +1681,10 @@ def print_out(run: Run) -> None:
 
 
 def shared_home(gradle_user_home: Path | None) -> Path:
-    """--gradle-user-home, else .gust/shared-gradle-user-home, resolved."""
-    return (gradle_user_home or gust_dir() / SHARED_HOME).resolve()
+    """--gradle-user-home, else .gust/shared-gradle-user-home, resolved and made if missing."""
+    home = (gradle_user_home or gust_dir() / SHARED_HOME).resolve()
+    home.mkdir(parents=True, exist_ok=True)
+    return home
 
 
 def begin(run: Run, needed: bool) -> RunSummary:
@@ -1714,8 +1716,7 @@ def begin(run: Run, needed: bool) -> RunSummary:
 def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
     """Set up, stop daemons, run the steps up to the first unexpected check or error, and stop daemons again.
 
-    Ends with summary.json and the result: and out: lines. No log tail is printed after an unexpected
-    check when the output was shown.
+    Ends with summary.json and the result: and out: lines.
     """
     steps = run.scenario.steps
     _check_shell(run.scenario)
@@ -1727,13 +1728,9 @@ def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
             print(f"[{i}/{len(steps)}] {step.label()}", file=run.out)
             result = _run_command(run, step, i) if isinstance(step, RunStep) else _change_files(run, step, i)
             summary.steps.append(result)
-            if result.result == "error":
-                summary.result, summary.error = "error", result.error
-                break
-            if result.result == "unexpected":
-                summary.result = "failure"
-                if not run.show_output:
-                    _print_tail(run.out_dir / result.log, run.tail, run.out)
+            if result.result in ("error", "unexpected"):
+                summary.result = "failure" if result.result == "unexpected" else "error"
+                summary.error = result.error                             # None for an unexpected check
                 break
         if stop_daemons:
             summary.stop_daemons["after"] = _stop_daemons(run, "[AFT]", "stop-daemons-after.log", full=False)
@@ -1745,6 +1742,8 @@ def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
 
 
 def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
+    """Run a run.gradle or run.shell step: the `$` line, the result line, each unexpected check, and then the log's
+    tail unless the output was shown, as _install_wrapper does after a failed install."""
     log_rel, trace_rel = f"step-{index:02d}.log", f"step-{index:02d}-ops-log.txt"   # the trace file: its base + -log.txt
     trace = run.out_dir / trace_rel.removesuffix("-log.txt") if run.trace and step.kind == "gradle" else None
     if step.kind == "gradle":
@@ -1753,31 +1752,36 @@ def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
     else:
         argv, shown = shell_argv(step.command), step.command      # shown as written
     print(f"$ {shown}", file=run.out)
-    started = time.monotonic()
     try:
-        exit_code = _run_logged(argv, run.project, run.env, run.out_dir / log_rel, run.out if run.show_output else None)
+        exit_code, duration = _run_logged(argv, run.project, run.env, run.out_dir / log_rel, run.out if run.show_output else None)
     except OSError as e:                                           # the project dir or the binary is gone, say
         message = cannot_run(shown, e)
-        print(f"{paint(ERROR, run.color)}: {message}", file=run.out)
+        run.error(message)
         return StepResult(index=index, kind=step.kind, name=step.label(), result="error", command=shown, error=message)
-    duration = time.monotonic() - started
     output_text = (run.out_dir / log_rel).read_text(encoding="utf-8", errors="replace")   # CRLF read as LF
     checks = step.expect.checks(exit_code, output_text)
     unexpected = [c for c in checks if c["result"] == "unexpected"]
     traced = trace is not None and (run.out_dir / trace_rel).is_file()
     result = StepResult(
         index=index, kind=step.kind, name=step.label(), result="unexpected" if unexpected else "expected",
-        checks=checks, exit_code=exit_code, duration_s=round(duration, 1), log=log_rel,
+        checks=checks, exit_code=exit_code, duration_s=duration, log=log_rel,
         trace=trace_rel if traced else None, command=shown,
     )
     n = len(step.expect.output) + len(step.expect.no_output)       # the output checks
-    checks_note = f", {n} output check{'s' if n != 1 else ''}" if n else ""
+    checks_note = f", {_count(n, 'output check')}" if n else ""
     word = paint(UNEXPECTED if unexpected else EXPECTED, run.color)
     print(f"{word}: exit={exit_code}{checks_note} in {duration:.1f}s -> {log_rel}" + (f", {trace_rel}" if traced else ""),
           file=run.out)
     for check in unexpected:
         print(f"  {describe_check(check)}", file=run.out)
+    if unexpected and not run.show_output:
+        _print_tail(run.out_dir / log_rel, run.tail, run.out)
     return result
+
+
+def _count(n: int, noun: str) -> str:
+    """`1 file`, `2 files`."""
+    return f"{n} {noun}{'s' if n != 1 else ''}"
 
 
 def cannot_run(shown: str, e: OSError) -> str:
@@ -1788,29 +1792,32 @@ def cannot_run(shown: str, e: OSError) -> str:
 def _change_files(run: Run, step: WriteStep | EditStep | DeleteStep, index: int) -> StepResult:
     """Apply a write, edit, delete, or clear step. A failure comes back as an error result, not an exception."""
     kind = step.kind
-    files = (list(step.files) if isinstance(step, WriteStep) else [step.dir] if isinstance(step, DeleteStep)
-             else list(dict.fromkeys(e.file for e in step.edits)))
     try:
         if isinstance(step, WriteStep):
+            files = list(step.files)
             for rel, content in step.files.items():
                 _write_file(run.project / rel, content)
-        elif isinstance(step, DeleteStep):
-            done = _delete_dir(run, step)
-            files = [] if done == "was not there" else files
-        else:
+            note = f"{_count(len(files), 'file')} written"
+        elif isinstance(step, EditStep):
+            files = list(dict.fromkeys(e.file for e in step.edits))
             for edit in step.edits:
                 _apply_edit(run.project, edit)
+            note = f"{_count(len(files), 'file')} edited"
+        else:
+            files = [step.dir]
+            done = _delete_dir(run, step)
+            note = f"{step.dir} {done}"
+            if done == "was not there":
+                files = []
     except StepError as e:
         message = str(e)
     except OSError as e:
         rel = Path(e.filename).relative_to(run.project) if e.filename and Path(e.filename).is_relative_to(run.project) else e.filename
         message = f"cannot {kind} {rel}: {e.strerror}"
     else:
-        n = len(files)
-        print(f"{step.dir} {done}" if isinstance(step, DeleteStep)
-              else f"{n} file{'s' if n != 1 else ''} {'written' if kind == 'write' else 'edited'}", file=run.out)
+        print(note, file=run.out)
         return StepResult(index=index, kind=kind, name=step.label(), result="done", files=files)
-    print(f"{paint(ERROR, run.color)}: {message}", file=run.out)
+    run.error(message)
     return StepResult(index=index, kind=kind, name=step.label(), result="error", files=files, error=message)
 
 
@@ -1825,19 +1832,19 @@ def _stop_daemons(run: Run, label: str, log_name: str, full: bool) -> dict:
     print(f"{label} Stop Gradle daemons" + ("" if full else f" -> {log_name}"), file=run.out)
     if full:
         print(f"$ {command.shown}", file=run.out)
-    started = time.monotonic()
     try:
-        exit_code = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ), run.out_dir / log_name, None)
+        exit_code, duration = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ),
+                                          run.out_dir / log_name, None)
     except OSError as e:                                           # the project dir is gone, say: a failed stop, no log
         message = cannot_run(command.shown, e)
-        print(f"{paint(ERROR, run.color)}: {message}", file=run.out)
+        run.error(message)
         return {"error": message}
-    duration = time.monotonic() - started
+    line = f"exit={exit_code} in {duration:.1f}s -> {log_name}"
     if exit_code != 0:
-        print(f"{paint(ERROR, run.color)}: exit={exit_code} in {duration:.1f}s -> {log_name}", file=run.out)
+        run.error(line)
     elif full:
-        print(f"exit={exit_code} in {duration:.1f}s -> {log_name}", file=run.out)
-    return {"exit_code": exit_code, "duration_s": round(duration, 1), "log": log_name}
+        print(line, file=run.out)
+    return {"exit_code": exit_code, "duration_s": duration, "log": log_name}
 
 
 def _install_wrapper(run: Run) -> dict:
@@ -1850,16 +1857,15 @@ def _install_wrapper(run: Run) -> dict:
     command = GradleCommand("gradle", f"wrapper --gradle-version {shlex.quote(version)} --no-daemon", run.user_home)
     print(f"{WRAPPER_LABEL} Install Gradle wrapper {version}", file=run.out)
     print(f"$ {command.shown}", file=run.out)
-    started = time.monotonic()
-    exit_code = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ), run.out_dir / INSTALL_LOG,
-                            run.out if run.show_output else None)
-    duration = time.monotonic() - started
+    exit_code, duration = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ),
+                                      run.out_dir / INSTALL_LOG, run.out if run.show_output else None)
+    line = f"exit={exit_code} in {duration:.1f}s -> {INSTALL_LOG}"
     if exit_code != 0:
-        print(f"{paint(ERROR, run.color)}: exit={exit_code} in {duration:.1f}s -> {INSTALL_LOG}", file=run.out)
+        run.error(line)
         if not run.show_output:
             _print_tail(run.out_dir / INSTALL_LOG, run.tail, run.out)
     else:
-        print(f"exit=0 in {duration:.1f}s -> {INSTALL_LOG}", file=run.out)
+        print(line, file=run.out)
     return {"version": version, "log": INSTALL_LOG, "exit_code": exit_code}
 
 
@@ -1900,12 +1906,13 @@ def opening_rule(label: str) -> str:
     return "-" * max(RULE_WIDTH - len(tail), 5) + tail
 
 
-def _run_logged(argv: list[str], cwd: Path, env: dict, log_path: Path, echo) -> int:
-    """Run argv, stdout and stderr together into log_path, and return the exit code.
+def _run_logged(argv: list[str], cwd: Path, env: dict, log_path: Path, echo) -> tuple[int, float]:
+    """Run argv, stdout and stderr together into log_path, and return the exit code and the seconds it took, to 0.1.
 
     With echo (a text stream), each line is also written there as it arrives, between two rules. When argv cannot
     start, the OSError is raised before any rule is written or log_path is made.
     """
+    started = time.monotonic()
     proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if echo is not None:
         echo.write(opening_rule(log_path.name) + "\n")
@@ -1922,7 +1929,7 @@ def _run_logged(argv: list[str], cwd: Path, env: dict, log_path: Path, echo) -> 
     if echo is not None:
         echo.write(("" if last.endswith(b"\n") else "\n") + "-" * RULE_WIDTH + "\n")
         echo.flush()
-    return proc.returncode
+    return proc.returncode, round(time.monotonic() - started, 1)
 
 
 def _print_tail(log: Path, n: int, out) -> None:
@@ -2097,6 +2104,12 @@ def zip_scenario(scenario: Scenario, target: Path, gradle_version: str | None = 
     if not target.parent.is_dir():
         raise GustError(f"no such directory {target.parent} for the zip")
     fetch_remote(scenario)
+    _write_zip(target, top, zip_files(scenario, gradle_version))
+
+
+def zip_files(scenario: Scenario, gradle_version: str | None = None) -> dict[str, tuple[int, bytes]]:
+    """What goes into the zip's folder, path -> (mode, bytes): the project's starting state without the wrapper, and
+    REPRODUCER.md. A remote must be fetched by then."""
     files = project_files(scenario)
     version = gradle_version or _scenario_gradle_version(scenario, files)
     files = {rel: f for rel, f in files.items() if not _is_wrapper(rel)}
@@ -2104,7 +2117,7 @@ def zip_scenario(scenario: Scenario, target: Path, gradle_version: str | None = 
         raise GustError(f"the project has a {REPRODUCER} of its own, where the zip's {REPRODUCER} goes")
     readme = render_reproducer(scenario, {rel: data for rel, (_, data) in files.items()}, version)
     files[REPRODUCER] = (FILE_MODE, readme.encode("utf-8"))
-    _write_zip(target, top, files)
+    return files
 
 
 def project_files(scenario: Scenario) -> dict[str, tuple[int, bytes]]:
@@ -2124,11 +2137,8 @@ def _remote_files(remote: Remote) -> dict[str, tuple[int, bytes]]:
     or name case the checkout has. A symbolic link's bytes are its target, which must stay inside the project.
     Submodules are left out."""
     tree = f"HEAD:{remote.subdir}" if remote.subdir else "HEAD"
-    listing = subprocess.run(["git", "ls-tree", "-r", "-z", tree], cwd=remote.dir, capture_output=True)
-    if listing.returncode != 0:
-        raise GustError(f"git ls-tree failed in {remote.dir}: {listing.stderr.decode(errors='replace').strip()}")
     blobs = []
-    for record in filter(None, listing.stdout.split(b"\0")):
+    for record in filter(None, _git(remote.dir, "ls-tree", "-r", "-z", tree).split(b"\0")):
         meta, _, name = record.partition(b"\t")
         mode, kind, sha = meta.decode().split()
         try:
@@ -2138,11 +2148,8 @@ def _remote_files(remote: Remote) -> dict[str, tuple[int, bytes]]:
         _check_relative_path(rel, f"setup.layout.remote {rel!r}")     # as a layout's names
         if kind == "blob":
             blobs.append((rel, {"100755": EXEC_MODE, "120000": LINK_MODE}.get(mode, FILE_MODE), sha))
-    proc = subprocess.run(["git", "cat-file", "--batch"], cwd=remote.dir, capture_output=True,
-                          input="".join(f"{sha}\n" for _, _, sha in blobs).encode())
-    if proc.returncode != 0:
-        raise GustError(f"git cat-file failed in {remote.dir}: {proc.stderr.decode(errors='replace').strip()}")
-    files, data, pos = {}, proc.stdout, 0
+    data = _git(remote.dir, "cat-file", "--batch", input="".join(f"{sha}\n" for _, _, sha in blobs).encode())
+    files, pos = {}, 0
     for rel, mode, _ in blobs:                                # each: "<sha> blob <size>\n<bytes>\n"
         start = data.index(b"\n", pos) + 1
         size = int(data[pos:start].split()[2])
@@ -2263,9 +2270,11 @@ def render_reproducer(scenario: Scenario, files: dict[str, bytes], gradle_versio
                     raise GustError(f"{where}.file: {edit.file!r} is left out of the zip with the wrapper, so it cannot be edited there")
                 try:
                     before = files[rel].decode("utf-8")
+                    after = _edited_text(before, edit)                 # as a run makes it
                 except UnicodeDecodeError:
                     raise GustError(f"{where}.file: {edit.file!r} is not UTF-8 text") from None
-                after = _edited(before, edit, where)
+                except StepError as e:
+                    raise GustError(f"{where}.replace: {e}") from None
                 commands += _sh_edit(rel, before, after)
                 files[rel] = after.encode("utf-8")
         else:
@@ -2313,14 +2322,6 @@ def _expect_comments(expect: Expect) -> list[str]:
             first, *rest = _visible(text).split("\n")
             lines += [f"# {what}: {first}", *(f"#   {line}" for line in rest)]
     return lines
-
-
-def _edited(text: str, edit: Edit, where: str) -> str:
-    """The text after the edit, as a run makes it, with where (steps[i].edit[j]) in the message of a failure."""
-    try:
-        return _edited_text(text, edit)
-    except StepError as e:
-        raise GustError(f"{where}.replace: {e}") from None
 
 
 def _sh_write(rel: str, content: str) -> Command:
@@ -2394,12 +2395,18 @@ PROJECT_HELP = ("an existing project dir to use in place, as it is: the steps ru
                 "in it; relative to the working directory; takes precedence over setup.project; not with setup.layout")
 
 
+def _print_error(message: str) -> None:
+    """An `ERROR: <message>` line on stderr."""
+    print(f"{paint(ERROR, color_on(sys.stderr))}: {message}", file=sys.stderr)
+
+
 class Parser(argparse.ArgumentParser):
     """argparse, with a usage error ending in an ERROR: line, as every other error gust prints does."""
 
     def error(self, message: str):
         self.print_usage(sys.stderr)
-        self.exit(EXIT_ERROR, f"{paint(ERROR, color_on(sys.stderr))}: {message}\n")
+        _print_error(message)
+        self.exit(EXIT_ERROR)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2502,7 +2509,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return EXIT_OK
     if gradle_args and args.command != "run":
-        print(f"{paint(ERROR, color_on(sys.stderr))}: arguments after -- are accepted by run only ({args.command} runs no Gradle step)", file=sys.stderr)
+        _print_error(f"arguments after -- are accepted by run only ({args.command} runs no Gradle step)")
         return EXIT_ERROR
     if args.command == "help":
         if args.topic is None:
@@ -2543,7 +2550,7 @@ def main(argv: list[str] | None = None) -> int:
             print(summary.to_json())
         return {"success": EXIT_OK, "failure": EXIT_FAILURE}.get(summary.result, EXIT_ERROR)
     except (GustError, OSError) as e:
-        print(f"{paint(ERROR, color_on(sys.stderr))}: {e}", file=sys.stderr)
+        _print_error(str(e))
         return EXIT_ERROR
 
 
@@ -2590,11 +2597,10 @@ def _cli_check(scenario: Scenario, gradle: str | None, user_home: Path, as_json:
         cached = (remote.dir / ".git").exists()
         if cached:
             root = remote.source
-            check_file_flow(scenario, lambda rel: (remote.source / rel).is_file())
+            check_file_flow(scenario)
             print(f"remote:   {remote.link}\ncheckout: {remote.dir} (cached)")
         else:
             print(f"remote:   {remote.link} (not cached; fetched on run)")
-    user_home.mkdir(parents=True, exist_ok=True)
     _check_shell(scenario)
     counts = scenario.counts()
     choice = settle_gradle(scenario, gradle, root, user_home, needed=counts["gradle"] > 0, may_install=True)

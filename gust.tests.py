@@ -961,6 +961,11 @@ class LayoutRemoteTest(GustCase):
         code, out, _ = self.cli("check", str(s), "--gradle", "9.7.0")
         self.assertEqual(code, gs.EXIT_OK)
         self.assertIn(f"gradle:   {WRAPPER} 9.7.0 (--gradle, installed by gradle; not checked, remote not cached)\n", out)
+        local = self.scenario_file(f'setup.layout.remote = "{self.url}#{self.sha}"\n[setup.layout.project]\n"mygradle" = ""\n'
+                                   '[[steps]]\nrun.gradle = "help"\n', "local.toml")            # a project binary, not on disk yet
+        code, out, _ = self.cli("check", str(local), "--gradle", "./mygradle")
+        self.assertEqual(code, gs.EXIT_OK, out)
+        self.assertIn("gradle:   ./mygradle (--gradle; not checked, remote not cached)\n", out)
         self.assertFalse((self.gust / "remotes").exists())
         self.script("notgradle", NOT_GRADLE)
         code, _, err = self.cli("check", str(s), "--gradle", "notgradle")
@@ -1563,6 +1568,9 @@ with = "b"
             "after": {"exit_code": 0, "log": "stop-daemons-after.log"},
         })
         self.assertIsInstance(summary.stop_daemons["before"]["duration_s"], float)
+        for duration in (summary.stop_daemons["before"]["duration_s"], summary.stop_daemons["after"]["duration_s"],
+                         summary.steps[0].duration_s):
+            self.assertEqual(duration, round(duration, 1))                         # to 0.1 s, as on the console
         self.assertEqual((self.out_dir / "stop-daemons-before.log").read_text().strip(), f"{home_arg()} --stop")
         self.assertEqual((self.out_dir / "stop-daemons-after.log").read_text().strip(), f"{home_arg()} --stop")
         printed = self.out.getvalue()
@@ -2267,10 +2275,7 @@ class ZipTest(GustCase):
         return f"{repo.as_posix()}#{git('rev-parse', 'HEAD')}"
 
     def readme(self, text, gradle_version=None):
-        scenario = gs.load_scenario(text, base_dir=self.tmp)
-        files = gs.project_files(scenario)
-        version = gradle_version or gs._scenario_gradle_version(scenario, files)
-        return gs.render_reproducer(scenario, {rel: data for rel, (_, data) in files.items()}, version)
+        return gs.zip_files(gs.load_scenario(text, base_dir=self.tmp), gradle_version)[gs.REPRODUCER][1].decode("utf-8")
 
     def entries(self, zip_path):
         """name -> (mode, date_time, bytes) of every entry, in the zip's order."""
@@ -2584,6 +2589,18 @@ rm -rf build
             code, out, err = self.cli("zip", str(scenario))
         self.assertEqual((code, out, err), (gs.EXIT_ERROR, "", "ERROR: [Errno 28] No space left on device\n"))
         self.assertFalse((self.tmp / "s.zip").exists())
+
+    def test_a_failed_git_call_is_one_error_line(self):
+        link = self.remote({"sub/a.txt": ("100644", b"a\n")})
+        fetched = self.scenario_file(f'setup.layout.remote = "{link}/sub"\n[[steps]]\nrun.gradle = "help"\n', "fetched.toml")
+        self.assertEqual(self.cli("zip", str(fetched))[0], gs.EXIT_OK)
+        checkout = gs.load_scenario(fetched.read_text()).remote.dir
+        (checkout / "ghost").mkdir()                       # on disk, so the cached checkout passes, but not in the commit
+        ghost = self.scenario_file(f'setup.layout.remote = "{link}/ghost"\n[[steps]]\nrun.gradle = "help"\n', "ghost.toml")
+        os.environ["GIT_TRACE"] = "1"                      # trace lines on git's stderr, ahead of the one that counts
+        code, out, err = self.cli("zip", str(ghost))
+        self.assertEqual((code, out, err), (gs.EXIT_ERROR, "", f"ERROR: git ls-tree failed in {checkout}: fatal: Not a valid object name HEAD:ghost\n"))
+        self.assertFalse((self.tmp / "ghost.zip").exists())
 
 
     # Regressions in REPRODUCER.md, one test each.
