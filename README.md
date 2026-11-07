@@ -191,7 +191,8 @@ them by hand too.
 as `~/.config/nvim/after/queries/toml/injections.scm`, so that each `'''` string
 is parsed in the language of the file name in its key. It needs the `toml`
 parser, and one for each language in the files, such as `kotlin`, `java`,
-`groovy`, or `bash`.
+`groovy`, or `bash`. For `.sh` files, the `bash` parser is used with
+nvim-treesitter, or with `vim.treesitter.language.register('bash', 'sh')`.
 
 ```query
 ;; extends
@@ -201,8 +202,8 @@ parser, and one for each language in the files, such as `kotlin`, `java`,
   (#offset! @injection.content 0 3 0 -3))
 ```
 
-**bat.** Save this as `GustToml.sublime-syntax` in the `syntaxes` directory
-below, then rebuild the cache. Each `'''` string under a key with one of these
+**bat.** Save this as `GustToml.sublime-syntax` in bat's `syntaxes` directory,
+then rebuild the cache, as shown below. Each `'''` string under a key with one of these
 extensions is highlighted in its language; add a match for any other.
 
 ```yaml
@@ -237,6 +238,7 @@ contexts:
 
 ```
 mkdir -p "$(bat --config-dir)/syntaxes"
+# save GustToml.sublime-syntax in that directory
 bat cache --build
 ```
 
