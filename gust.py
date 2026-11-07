@@ -133,7 +133,8 @@ Scenario file format (TOML)
 A scenario is one TOML file. Unknown keys are rejected, with the key path in
 the message. Paths are relative, may not contain "..", and are written as
 quoted keys ("src/Main.java" = ...). Write file contents as literal strings
-(''' ... ''') so $ and backslashes need no escaping.
+(''' ... ''') so $ and backslashes need no escaping. No path anywhere in a
+scenario, setup.project and setup.layout.base included, may contain a NUL.
 
 top level
   name          string   optional   slug: [A-Za-z0-9][A-Za-z0-9._-]*. Default: the scenario file's
@@ -956,6 +957,8 @@ def _load_project(value: str | None, base_dir: Path | None, cli: Path | None, ha
         raise GustError(f"{where} and setup.layout cannot be combined: in place, the project is used as it is")
     if raw == "":                                                    # never for --project, a Path
         raise GustError(f"{where}: must not be empty")
+    if "\0" in str(raw):
+        raise GustError(f"{where}: path must not contain a NUL character")
     path = Path(os.path.expanduser(raw))                             # a leading ~ expanded, as for --gradle
     if not path.is_absolute():
         if cli is not None:
@@ -988,6 +991,8 @@ def _load_remote(link: str) -> Remote:
 
 def _load_base(base: str, base_dir: Path | None) -> dict[str, str]:
     """The [project] table of a layout file, which may not have a base of its own."""
+    if "\0" in base:
+        raise GustError("setup.layout.base: path must not contain a NUL character")
     path = Path(base)
     if not path.is_absolute():
         if base_dir is None:

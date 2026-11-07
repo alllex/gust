@@ -361,6 +361,13 @@ run.shell = "true"
             with self.subTest(run=run):
                 self.assert_rejects(f"[[steps]]\n{run}", f"{where}: cannot split")       # on every system, not only on Windows
 
+    def test_a_nul_in_a_path_is_refused(self):
+        for key in ("setup.project", "setup.layout.base"):
+            with self.subTest(key=key):
+                with self.assertRaises(gs.GustError) as cm:                             # not a ValueError from the OS
+                    gs.load_scenario(f'{key} = "~\\u0000"\n[[steps]]\nrun.shell = "x"', base_dir=Path.cwd())
+                self.assertEqual(str(cm.exception), f"{key}: path must not contain a NUL character")
+
     def test_name_inferred(self):
         nameless = '[[steps]]\nrun.shell = "x"\n'
         self.assertEqual(gs.load_scenario(nameless).name, "scenario")
