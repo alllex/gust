@@ -1852,6 +1852,7 @@ with = "b"
                           "daemon stop failed: exit=3 -> stop-daemons-before.log", []))
         self.assertEqual(list(summary.stop_daemons), ["before"])                        # no step ran, so no stop after them
         self.assertEqual(summary.stop_daemons["before"]["exit_code"], 3)
+        self.assertEqual(list(summary.stop_daemons["before"]), ["exit_code", "duration_s", "log"])   # an error, not a warning
         self.assertFalse((self.project / "ran").exists())
         tail = f"{rule('last 1 of 1 lines of stop-daemons-before.log')}\ncannot stop\n{CLOSING}\n"         # as after a failed install
         self.assertRegex(self.out.getvalue(), r"\n\[BEF\] Stop Gradle daemons -> stop-daemons-before\.log\nERROR: exit=3 in \d+\.\ds -> "
@@ -1885,6 +1886,11 @@ with = "b"
                                   r"exit=3 in \d+\.\ds -> stop-daemons-after\.log\n"
                                   rf"\nout:      .*\nscenario: {word}\n{{")
             self.assertNotIn("ERROR", out)
+            # a warning in the JSON too, with the WARNING: line's text, next to the facts of the stop
+            after = summary["stop_daemons"]["after"]
+            self.assertEqual(list(after), ["exit_code", "duration_s", "log", "warning"])
+            self.assertEqual(after["warning"], f"exit=3 in {after['duration_s']:.1f}s -> stop-daemons-after.log")
+            self.assertIn(f"\nWARNING: {after['warning']}\n", out)
         # one that cannot start: a warning too, under the key warning
         s = self.scenario_file('name = "f"\n[[steps]]\nrun.shell = "true"\n')
         real = gs._run_logged

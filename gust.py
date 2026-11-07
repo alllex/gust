@@ -605,7 +605,10 @@ console's outcome and verdict words in lower case, and a file step that went
 through is "done": a run's result is "pass", "fail", or "error", as on the
 scenario: line; a run step's result is its verdict, "expected" or
 "unexpected" ("error" when the command could not start), and its outcome is
-"pass" or "fail", as on the step line. Durations are in seconds, to 0.1.
+"pass" or "fail", as on the step line. A WARNING: line on the console is a
+`warning` key with the same text: a failed [AFT] daemon stop has one, whether
+it ran with a nonzero exit code or could not start. Durations are in seconds,
+to 0.1.
 
 The schema, TypeScript-like. The keys come in the order written here; a key
 marked ? is left out when it has no value, and its comment says when it is there.
@@ -686,12 +689,14 @@ marked ? is left out when it has no value, and its comment says when it is there
     exit_code: number
     duration_s: number
     log: string                             // stop-daemons-before.log or stop-daemons-after.log
+    warning?: string                        // an after stop with a nonzero exit code: `exit=N in 0.2s ->
+                                            // stop-daemons-after.log`, as on its WARNING: line
   }
   interface StopError {                     // a before stop that could not start: an error
     error: string
   }
   interface StopWarning {                   // an after stop that could not start: a warning only
-    warning: string
+    warning: string                         // the message, as on its WARNING: line
   }
 
   // check --json
@@ -1970,8 +1975,9 @@ class RunSummary:
     result: str = "pass"         # "pass" | "fail" | "error", as on the console's scenario: line
     error: str | None = None     # with result "error": the message of the step, the failed install, or the failed [BEF] stop
     steps: list[StepResult] = field(default_factory=list)
-    stop_daemons: dict | None = None   # {"before", "after"}, each {"exit_code", "duration_s", "log"}; {"error"} for a
-                                       # [BEF] stop that could not start, {"warning"} for such an [AFT] stop
+    stop_daemons: dict | None = None   # {"before", "after"}, each {"exit_code", "duration_s", "log"}, plus "warning" for a
+                                       # failed [AFT] stop; {"error"} for a [BEF] stop that could not start, {"warning"} for
+                                       # such an [AFT] stop
 
     def to_json(self) -> str:
         """The summary as one JSON line, fields in declaration order, without empty optional ones."""
@@ -2254,7 +2260,10 @@ def _stop_daemons(run: Run, label: str, log_name: str, full: bool, warn: bool = 
         report(line)
     elif full:
         print(line, file=run.out)
-    return {"exit_code": exit_code, "duration_s": duration, "log": log_name}
+    stop = {"exit_code": exit_code, "duration_s": duration, "log": log_name}
+    if exit_code != 0 and warn:                                    # the WARNING: line's text, for JSON readers too
+        stop["warning"] = line
+    return stop
 
 
 def _install_wrapper(run: Run) -> dict:
