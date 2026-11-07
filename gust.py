@@ -227,7 +227,8 @@ steps[].edit[]
   file          string   required   a file from the project table, the remote checkout, the
                                     project dir in place, or an earlier write step
   replace       string   required   non-empty; must occur exactly once in the file when the step runs,
-                                    where a line end matches CRLF, LF and CR alike
+                                    overlapping occurrences counted, where a line end matches CRLF,
+                                    LF and CR alike
   with          string   required   the replacement text, written as it is, except that in a file
                                     with only CRLF, only LF or only CR line ends, each \\n not after a \\r
                                     is written as the file's line end
