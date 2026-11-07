@@ -1532,6 +1532,9 @@ with = "b"
             "after": {"exit_code": 0, "log": "stop-daemons-after.log"},
         })
         self.assertIsInstance(summary.stop_daemons["before"]["duration_s"], float)
+        for duration in (summary.stop_daemons["before"]["duration_s"], summary.stop_daemons["after"]["duration_s"],
+                         summary.steps[0].duration_s):
+            self.assertEqual(duration, round(duration, 1))                         # to 0.1 s, as on the console
         self.assertEqual((self.out_dir / "stop-daemons-before.log").read_text().strip(), f"{home_arg()} --stop")
         self.assertEqual((self.out_dir / "stop-daemons-after.log").read_text().strip(), f"{home_arg()} --stop")
         printed = self.out.getvalue()
