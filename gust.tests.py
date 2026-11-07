@@ -171,7 +171,7 @@ class GustCase(unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         real_stdin = sys.stdin
         if stdin is not None:
-            sys.stdin = stdin if isinstance(stdin, io.StringIO) else io.StringIO(stdin)
+            sys.stdin = stdin if isinstance(stdin, io.TextIOBase) else io.TextIOWrapper(io.BytesIO(stdin.encode()), "utf-8")
         try:
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 code = gs.main(list(argv))
@@ -355,6 +355,19 @@ run.shell = "true"
         self.assert_rejects('name = "has space"\n[[steps]]\nrun.shell = "x"', "name: must match")
         self.assert_rejects('name = "-lead"\n[[steps]]\nrun.shell = "x"', "name: must match")
 
+    def test_gradle_args_that_cannot_be_split_are_refused(self):
+        for run, where in (("run.gradle = 'help \"x'", "steps[1].run.gradle"),
+                           ("run.gradle = { args = \"help 'x\" }", "steps[1].run.gradle.args")):
+            with self.subTest(run=run):
+                self.assert_rejects(f"[[steps]]\n{run}", f"{where}: cannot split")       # on every system, not only on Windows
+
+    def test_a_nul_in_a_path_is_refused(self):
+        for key in ("setup.project", "setup.layout.base"):
+            with self.subTest(key=key):
+                with self.assertRaises(gs.GustError) as cm:                             # not a ValueError from the OS
+                    gs.load_scenario(f'{key} = "~\\u0000"\n[[steps]]\nrun.shell = "x"', base_dir=Path.cwd())
+                self.assertEqual(str(cm.exception), f"{key}: path must not contain a NUL character")
+
     def test_name_inferred(self):
         nameless = '[[steps]]\nrun.shell = "x"\n'
         self.assertEqual(gs.load_scenario(nameless).name, "scenario")
@@ -407,6 +420,12 @@ class LayoutBaseTest(GustCase):
 
     def load(self, text, base_dir=None):
         return gs.load_scenario(text, base_dir=self.tmp if base_dir is None else base_dir)
+
+    def test_a_base_that_is_not_utf8_is_refused(self):
+        self.base.write_bytes('[project]\n"a.txt" = "caf\u00e9"\n'.encode("latin-1"))
+        with self.assertRaises(gs.GustError) as cm:
+            self.load('setup.layout.base = "layouts/java.toml"\n[[steps]]\nrun.shell = "true"\n')
+        self.assertEqual(str(cm.exception), f"setup.layout.base: {self.base} is not UTF-8 text")
 
     def test_base_files_merged_and_overwritten(self):
         s = self.load("""
@@ -636,6 +655,63 @@ class LayoutRemoteTest(GustCase):
             gs.fetch_remote(junk, out=self.out)
         self.assertIn("not a git checkout, so it is left alone", str(cm.exception))
 
+    def test_a_bad_cached_checkout_leaves_nothing_on_stdout(self):
+        good = self.write(f'setup.layout.remote = "{self.url}#{self.sha}"')
+        self.assertEqual(self.cli("run", str(good), "--keep-daemons")[0], gs.EXIT_OK)    # cached now
+        checkout = gs.load_scenario(good.read_text(), base_dir=self.tmp).remote.dir
+        # check verifies the cached checkout's HEAD, as run does
+        other = self.scenario_file(f'setup.layout.remote = "{self.url}#0123abcd"\n[[steps]]\nrun.shell = "true"\n', "other.toml")
+        shutil.copytree(checkout, gs.load_scenario(other.read_text(), base_dir=self.tmp).remote.dir, symlinks=True)
+        for command in ("check", "run"):
+            with self.subTest(command=command):
+                code, out, err = self.cli(command, str(other))
+                self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
+                self.assertIn(", not 0123abcd; delete it to refetch", err)
+        # a file flow that fails against the checkout prints no remote: line first
+        missing = self.write(f'setup.layout.remote = "{self.url}#{self.sha}"',
+                             '[[steps]]\nedit = [{ file = "missing.txt", replace = "a", with = "b" }]\n')
+        for command in ("check", "run"):
+            with self.subTest(command=command):
+                code, out, err = self.cli(command, str(missing))
+                self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
+                self.assertIn("'missing.txt' is not in the layout", err)
+
+    def test_a_cached_remote_prints_nothing_before_a_failed_gradle_check(self):
+        s = self.write(f'setup.layout.remote = "{self.url}#{self.sha}"')
+        self.assertEqual(self.cli("run", str(s), "--keep-daemons")[0], gs.EXIT_OK)       # cached now
+        for command in ("check", "run"):
+            with self.subTest(command=command):
+                code, out, err = self.cli(command, str(s), "--gradle", "nosuch")
+                self.assertEqual((code, out), (gs.EXIT_ERROR, ""))                     # the remote lines come with the header
+                self.assertIn("--gradle 'nosuch': not found on PATH", err)
+
+    def test_check_refuses_a_checkout_dir_that_is_no_checkout(self):
+        s = self.write(f'setup.layout.remote = "{self.url}#{self.sha}"')
+        junk = gs.load_scenario(s.read_text(), base_dir=self.tmp).remote.dir
+        junk.mkdir(parents=True)
+        (junk / "file").write_text("")
+        for command in ("check", "run"):                                                 # as run refuses it
+            with self.subTest(command=command):
+                code, out, err = self.cli(command, str(s))
+                self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
+                self.assertIn("is not a git checkout, so it is left alone", err)
+
+    def test_check_verifies_a_cached_checkout_has_the_subdir(self):
+        s = self.write(f'setup.layout.remote = "{self.url}#{self.sha}"')
+        self.assertEqual(self.cli("run", str(s), "--keep-daemons")[0], gs.EXIT_OK)       # cached now
+        checkout = gs.load_scenario(s.read_text(), base_dir=self.tmp).remote.dir
+        s = self.write(f'setup.layout.remote = "{self.url}#{self.sha}/nosuch"')            # the same checkout
+        code, out, err = self.cli("check", str(s))
+        self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
+        self.assertIn(f"setup.layout.remote: 'nosuch' is not a directory in {checkout}", err)
+
+    def test_check_takes_a_project_binary_from_an_uncached_remote(self):
+        s = self.write(f'setup.layout.remote = "{self.url}#{self.sha}"', '[[steps]]\nrun.gradle = "help"\n')
+        code, out, err = self.cli("check", str(s), "--gradle", WRAPPER)              # in the commit, not fetched yet
+        self.assertEqual((code, err), (gs.EXIT_OK, ""))
+        self.assertIn(f"gradle:   {WRAPPER} (--gradle; not checked, remote not cached)\n", out)
+        self.assertEqual(self.cli("run", str(s), "--gradle", WRAPPER, "--keep-daemons")[0], gs.EXIT_OK)   # as run takes it
+
     def test_gradle_wrapper_field(self):
         scenario = self.load(f'setup.gradle = "wrapper"\nsetup.layout.remote = "{self.url}#{self.sha}"',
                              '[[steps]]\nrun.gradle = { args = "help", expect = { output = ["gradlew help"] } }\n')
@@ -792,6 +868,22 @@ class LayoutRemoteTest(GustCase):
         self.assertEqual(code, gs.EXIT_ERROR)
         self.assertTrue(out.endswith(f"result: ERROR\nout:      {self.tmp / 's.out'}\n"), out[-200:])
 
+    def test_an_install_that_cannot_start_ends_the_run_as_an_error(self):
+        self.fake_gradle_on_path()
+        s = self.scenario_file('name = "v"\nsetup.gradle = "9.7.1"\n' + SETTINGS + '[[steps]]\nrun.gradle = "help"')
+        with mock.patch.object(gs, "_run_logged", side_effect=OSError(2, "No such file or directory", "gradle")):
+            code, out, err = self.cli("run", str(s), "--json")
+        self.assertEqual((code, err), (gs.EXIT_ERROR, ""))                                # after the header: on stdout
+        message = "cannot run gradle wrapper --gradle-version 9.7.1 --no-daemon: No such file or directory: gradle"
+        self.assertIn(f"ERROR: {message}\nresult: ERROR (0/1 steps ran)\nout:      {self.tmp / 's.out'}\n", out)
+        summary = json.loads((self.tmp / "s.out" / "summary.json").read_text())
+        self.assertEqual((summary["result"], summary["error"]), ("error", message))
+        with mock.patch.object(gs, "_run_logged", side_effect=OSError(2, "No such file or directory", "gradle")):
+            code, out, err = self.cli("setup", str(s))
+        self.assertEqual((code, err), (gs.EXIT_ERROR, ""))
+        self.assertTrue(out.endswith(f"ERROR: {message}\nresult: ERROR\n"
+                                     f"out:      {self.tmp / 's.out'}\n"), out[-200:])
+
     def test_cli_version_values(self):
         self.fake_gradle_on_path()
         s = self.write(SETTINGS, '[[steps]]\nrun.gradle = "help"\n')
@@ -919,6 +1011,15 @@ class LayoutRemoteTest(GustCase):
         code, out, _ = self.cli("check", str(self.write(f'setup.layout.remote = "{self.url}#{self.sha}"', '[[steps]]\nrun.gradle = "help"\n')))
         self.assertEqual(code, gs.EXIT_OK, out)
         self.assertIn("gradle:   gradle (default; not checked, remote not cached)\n", out)
+
+    def test_check_json_has_no_null_keys(self):
+        s = self.scenario_file('[[steps]]\nrun.shell = "true"\n', "plain.toml")        # no description, nothing to probe
+        code, out, _ = self.cli("check", str(s), "--json")
+        self.assertEqual(code, gs.EXIT_OK)
+        self.assertEqual(json.loads(out.rstrip("\n").splitlines()[-1]),               # empty keys left out, as in run's summary
+                         {"scenario": "plain", "gradle": "gradle", "steps": 1,
+                          "step_counts": {"gradle": 0, "shell": 1, "write": 0, "edit": 0, "delete": 0, "clear": 0},
+                          "result": "success"})
 
     def test_check_command(self):
         self.fake_gradle_on_path()
@@ -1253,6 +1354,13 @@ run.shell = "grep -q four f.txt && grep -q five g.txt"
             self.assertNotIn(gone, printed)
         self.assertNotIn("pass", printed.split("gradle:")[1])                     # no pass/fail word on the console
         self.assertEqual(json.loads((self.out_dir / "summary.json").read_text())["description"], "Two lines of\nnarrative.")
+
+    def test_an_error_inside_the_steps_still_stops_the_daemons_after(self):
+        with mock.patch.object(gs, "_change_files", side_effect=gs.GustError("boom")):
+            summary = self.run_text('name = "e"\n[[steps]]\nwrite."a.txt" = "a"\n', stop_daemons=True)
+        self.assertEqual((summary.result, summary.error), ("error", "boom"))
+        self.assertIn("[1/1] Write: a.txt\nERROR: boom\n[AFT] Stop Gradle daemons -> stop-daemons-after.log\n"
+                      "result: ERROR (0/1 steps ran)\n", self.out.getvalue())             # the error first, then the stop
 
     def test_stops_at_unexpected_check_and_shows_tail(self):
         summary = self.run_text("""
@@ -1695,6 +1803,35 @@ class CliTest(GustCase):
         code, out, err = self.cli("--", "--offline")
         self.assertEqual((code, err), (gs.EXIT_OK, ""))
         self.assertIn("usage: gust.py", out)                                          # the general help, not a "None runs no Gradle step" error
+
+    def test_a_scenario_that_is_not_utf8_is_refused(self):
+        text = '[[steps]]\nwrite."a.txt" = "caf\u00e9"\n'
+        for encoding in ("latin-1", "utf-16"):                                          # utf-16: PowerShell 5's >
+            path = self.tmp / f"{encoding}.toml"
+            path.write_bytes(text.encode(encoding))
+            for command in ("check", "run", "zip", "flat"):
+                with self.subTest(encoding=encoding, command=command):
+                    self.assertEqual(self.cli(command, str(path)), (gs.EXIT_ERROR, "", f"ERROR: {path} is not UTF-8 text\n"))
+
+    def test_stdin_is_read_as_utf8_bytes(self):
+        text = '[[steps]]\nwrite."a.txt" = "caf\u00e9"\n'
+        latin = io.TextIOWrapper(io.BytesIO(text.encode("latin-1")), encoding="utf-8")   # strict, as on a UTF-8 locale
+        self.assertEqual(self.cli("run", "-", stdin=latin), (gs.EXIT_ERROR, "", "ERROR: stdin is not UTF-8 text\n"))
+        cp1252 = io.TextIOWrapper(io.BytesIO(text.encode("utf-8")), encoding="cp1252")   # a Windows code page
+        code, _, err = self.cli("run", "-", "--keep-daemons", stdin=cp1252)
+        self.assertEqual((code, err), (gs.EXIT_OK, ""))
+        self.assertEqual((self.tmp / "scenario.out" / "project" / "a.txt").read_bytes(), "caf\u00e9".encode("utf-8"))
+
+    def test_a_console_that_cannot_show_a_character_gets_an_escape(self):
+        s = self.tmp / "u.toml"
+        s.write_bytes('[[steps]]\nrun.shell = "echo \u65e5"\n'.encode("utf-8"))
+        console = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")                   # a redirected stdout on Windows
+        with contextlib.redirect_stdout(console), contextlib.redirect_stderr(io.StringIO()):
+            code = gs.main(["run", str(s), "--keep-daemons"])
+        console.flush()
+        self.assertEqual(code, gs.EXIT_OK)
+        self.assertIn(b"[1/1] Run: echo \\u65e5", console.buffer.getvalue())
+        self.assertTrue((self.tmp / "u.out" / "summary.json").is_file())
 
     def test_any_scenario_file_name(self):
         s = self.scenario_file(MINIMAL, name="loop.scenario")
@@ -2220,6 +2357,15 @@ run.shell = "true"
         self.assertEqual(out, '# A scenario.\n#   indented, kept as is\n\n# more\nname = "x"\n\n[[steps]]\nrun.shell = "true"\n')
         code, out, _ = self.flat('\n\nname = "x"\n[[steps]]\nrun.shell = "true"\n')
         self.assertEqual(out, 'name = "x"\n\n[[steps]]\nrun.shell = "true"\n')          # blank lines alone are not a comment block
+
+    def test_a_comment_with_a_unicode_line_separator_is_kept(self):
+        for sep in ("\u2028", "\u2029", "\u0085"):                                    # line breaks for Python, not for TOML
+            with self.subTest(sep=repr(sep)):
+                path = self.tmp / "sep.toml"
+                path.write_bytes(f'# a{sep}b\n[[steps]]\nrun.shell = "true"\n'.encode("utf-8"))   # UTF-8 on Windows too
+                code, out, err = self.cli("flat", str(path))
+                self.assertEqual((code, err), (gs.EXIT_OK, ""))
+                self.assertEqual(out, f'# a{sep}b\n[[steps]]\nrun.shell = "true"\n')
 
     def test_stdin_with_relative_base(self):
         code, out, err = self.cli("flat", "-", stdin='setup.layout.base = "layouts/java.toml"\n[[steps]]\nrun.shell = "true"\n')

@@ -229,9 +229,11 @@ still uses the wrapper, such as `test -x gradlew`, is refused.
 | `1` | failure: a check came out unexpected |
 | `2` | error: gust could not do something: bad input (a failed precondition, a malformed scenario, bad arguments), a step that could not be carried out, or a failed wrapper install |
 
-The preconditions (Python version, scenario shape, Gradle binary, git) are all
-checked before the out dir is touched. `summary.json` is written for `gust run`
-only, and there it is present whenever the header was printed.
+The preconditions (Python version, a scenario in UTF-8 and of the right shape,
+Gradle binary, git) are all checked before the out dir is touched.
+`summary.json` is written for `gust run` only, and there it is present whenever
+the header was printed: past that point, anything gust cannot do ends the run
+as an error.
 
 On a terminal, the console's verdict words are colored in the terminal's own
 palette: `EXPECTED` green, `UNEXPECTED` bold red, `ERROR` red (on stderr too),
