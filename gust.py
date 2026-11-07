@@ -2716,7 +2716,7 @@ def read_source(args) -> tuple[str, str, Path, str | None]:
             args.scenario.resolve().parent, args.scenario.stem)
 
 
-def _load_args(args, project: Path | None = None) -> tuple[Scenario, str]:
+def _scenario_and_stem(args, project: Path | None = None) -> tuple[Scenario, str]:
     """The scenario from its file or stdin, and the stem of the default out dir and zip: the file's stem, or the
     scenario's name for stdin."""
     text, source, base_dir, stem = read_source(args)
@@ -2724,12 +2724,12 @@ def _load_args(args, project: Path | None = None) -> tuple[Scenario, str]:
     return scenario, stem or scenario.name
 
 
-def _new_run(args, tmp: bool, project: Path | None, **options) -> Run:
+def _new_run(args, *, tmp: bool, project: Path | None, **options) -> Run:
     """The Run of setup, run, or stop-daemons: the scenario, its out dir settled and checked, and the Gradle user home.
     options are Run's fields beyond the ones every such command has."""
     if tmp and args.out:
         raise GustError(f"--tmp and --out cannot be combined: with --tmp the out dir is {TMP_SHAPE}")
-    scenario, stem = _load_args(args, project)
+    scenario, stem = _scenario_and_stem(args, project)
     out_dir = tmp_out(stem) if tmp else args.out.resolve() if args.out else (Path.cwd() / (stem + ".out")).resolve()
     check_out_dir(out_dir, None if str(args.scenario) == "-" else args.scenario, scenario.project)
     return Run(scenario, out_dir, shared_home(args.gradle_user_home), gradle=args.gradle, **options)
@@ -2752,8 +2752,8 @@ def _load_named(text: str, source: str, **kwargs) -> Scenario:
 
 
 def _cli_run(args) -> int:
-    run = _new_run(args, args.tmp, args.project, tail=args.tail, show_output=args.show_output, trace=args.trace,
-                   gradle_args=args.gradle_args)
+    run = _new_run(args, tmp=args.tmp, project=args.project, tail=args.tail, show_output=args.show_output,
+                   trace=args.trace, gradle_args=args.gradle_args)
     summary = run_scenario(run, not args.keep_daemons)
     if args.json:
         print(summary.to_json())
@@ -2768,7 +2768,7 @@ def _cli_flat(args) -> int:
 
 def _cli_check(args) -> int:
     """Validate the scenario and settle the Gradle binary as run would, without setting anything up."""
-    scenario, _ = _load_args(args, args.project)
+    scenario, _ = _scenario_and_stem(args, args.project)
     user_home = shared_home(args.gradle_user_home)
     remote, root = scenario.remote, scenario.project
     remote_info = fetch_remote(scenario, may_fetch=False)
@@ -2813,12 +2813,11 @@ def _cli_stop_daemons(args) -> int:
 
 
 def _cli_zip(args) -> int:
-    """Write the scenario zip and print its path. A failure raises, for main's one `ERROR: ...` line on stderr, exit
-    code 2."""
+    """Write the scenario zip and print its path."""
     if args.gradle is not None and not VERSION_RE.fullmatch(args.gradle):
         raise GustError(f"--gradle {args.gradle!r}: a Gradle version such as 9.9.0 is expected "
                         f"here, for {SCENARIO_MD}; no Gradle runs for a zip, so a binary is of no use")
-    scenario, stem = _load_args(args)
+    scenario, stem = _scenario_and_stem(args)
     target = Path(os.path.abspath(args.output or Path(stem + ".zip")))
     zip_scenario(scenario, target, args.gradle)
     print(target)
@@ -2826,7 +2825,7 @@ def _cli_zip(args) -> int:
 
 
 def _cli_setup(args) -> int:
-    run = _new_run(args, args.tmp, project=None, show_output=args.show_output)
+    run = _new_run(args, tmp=args.tmp, project=None, show_output=args.show_output)
     if run.scenario.project is not None:
         raise GustError(f"nothing to lay out: the project {run.scenario.project} is used in place, as it is")
     ok = begin(run, needed=False).result != "error"
