@@ -776,6 +776,16 @@ class LayoutRemoteTest(GustCase):
         code, out, _ = self.cli("run", str(s), "--keep-daemons")                         # the same URL, the same dir
         self.assertIn(f"checkout: {checkout} (cached)\n", out)
 
+    def test_a_checkout_dir_that_cannot_be_made_is_one_error_line(self):
+        s = self.write(f'setup.layout.remote = "{self.url}#{self.sha}"')
+        self.gust.mkdir()
+        (self.gust / "remotes").write_text("")                                          # a file where the remotes dir goes
+        code, out, err = self.cli("run", str(s), "--keep-daemons")
+        self.assertEqual((code, out), (gs.EXIT_ERROR, ""))                               # no progress lines ahead of it
+        self.assertTrue(err.startswith(f"ERROR: cannot use {self.gust / 'remotes'}"), err)
+        self.assertIn("as the checkout dir: ", err)
+        self.assertEqual(len(err.splitlines()), 1, err)
+
     def test_check_refuses_a_checkout_dir_that_is_no_checkout(self):
         s = self.write(f'setup.layout.remote = "{self.url}#{self.sha}"')
         junk = gs.load_scenario(s.read_text(), base_dir=self.tmp).remote.dir
