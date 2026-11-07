@@ -604,7 +604,9 @@ In the block of a write, edit, delete, or clear, the commands are joined with
 apply. The block's comments come before the chain, since in an interactive zsh
 a comment inside it would end it. The block of a run step is a plain command,
 since it may be expected to fail. A fence (``` or ~~~) or a < at the start of a
-line of the description is escaped, so the rest of SCENARIO.md stays as it is.
+line of the description, after any list or quote markers, is escaped, so the
+rest of SCENARIO.md stays as it is; a < that starts an autolink, such as
+<https://...>, is left as it is.
 
 For the same scenario, SCENARIO.md is the same, byte for byte, on every
 machine, and so is the zip wherever Python's zlib is the same: there is no gust
@@ -626,7 +628,7 @@ are refused:
   - a shell step that uses the wrapper once ./gradlew is read as gradle, such
     as `test -x gradlew` or a path under gradle/wrapper
   - a symbolic link in the remote commit that is absolute or leads out of the
-    project
+    project, or one to the project dir or to SCENARIO.md
 The zip is made from the files in memory, never from a copy on disk, so two
 names that differ in case only stay two files on every system.
 
@@ -2086,6 +2088,9 @@ _DISTRIBUTION_RE = re.compile(r"gradle-([0-9][\w.+-]*?)-(?:bin|all)\.zip")   # t
 _GRADLEW_RE = re.compile(r"(?<![\w./-])(?:\.\.?/)+gradlew(?:\.bat)?(?![\w.-])")   # ./gradlew or ../gradlew in a shell command
 _WRAPPER_USE_RE = re.compile(r"(?<![\w./-])gradlew(?:\.bat)?(?![\w-])|gradle[/\\]wrapper")   # what is left of the wrapper then
 _GRADLE_VAR_RE = re.compile(r"\$\{?GRADLE(?:_ARGS)?(?![A-Za-z0-9_])")         # $GRADLE or $GRADLE_ARGS, not $GRADLE_USER_HOME
+_DESCRIPTION_ESCAPE_RE = re.compile(                                          # a fence or HTML start that would hide the rest:
+    r"^((?:[ ]{0,3}(?:>|[-+*]|\d{1,9}[.)])[ ]*)*[ ]{0,3})"                     # after any list or quote markers,
+    r"([`~]{3}|<(?![A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*>|[^\s<>@]+@[^\s<>@]+>))", re.M)   # but not an autolink
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")                        # control characters other than tab and newline
 
 
@@ -2117,8 +2122,8 @@ def zip_files(scenario: Scenario, gradle_version: str | None = None) -> dict[str
     files = project_files(scenario)
     version = gradle_version or _scenario_gradle_version(scenario, files)
     files = {rel: f for rel, f in files.items() if not _is_wrapper(rel)}
-    if any(_is_scenario_md(rel) for rel in files):
-        raise GustError(f"the project has a {SCENARIO_MD} of its own, where the zip's {SCENARIO_MD} goes")
+    if own := next((rel for rel in files if _is_scenario_md(rel)), None):
+        raise GustError(f"the project has {own!r}, where the zip's {SCENARIO_MD} goes")
     readme = render_scenario_md(scenario, {rel: data for rel, (_, data) in files.items()}, version)
     files[SCENARIO_MD] = (FILE_MODE, readme.encode("utf-8"))
     return files
@@ -2165,11 +2170,14 @@ def _remote_files(remote: Remote) -> dict[str, tuple[int, bytes]]:
 
 
 def _check_link(rel: str, target: bytes) -> None:
-    """Refuse a symbolic link that is absolute or leads out of the project, which would be one in the zip too."""
+    """Refuse a symbolic link that is absolute or leads out of the project, which would be one in the zip too, or one
+    to the project dir or SCENARIO.md, through which a step would change SCENARIO.md on replay."""
     to = target.decode("utf-8", errors="replace")
     inside = posixpath.normpath(posixpath.join(posixpath.dirname(rel), to.replace("\\", "/")))
     if posixpath.isabs(to) or PureWindowsPath(to).anchor or inside == ".." or inside.startswith("../"):
         raise GustError(f"setup.layout.remote: the link {rel!r} points to {to!r}, outside the project")
+    if inside == "." or _is_scenario_md(inside):             # a step through the link would change the zip's SCENARIO.md
+        raise GustError(f"setup.layout.remote: the link {rel!r} points to {to!r}, the project dir or its {SCENARIO_MD}")
 
 
 def _is_scenario_md(rel: str) -> bool:
@@ -2222,8 +2230,9 @@ def _write_zip(target: Path, top: str, files: dict[str, tuple[int, bytes]]) -> N
 
 def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_version: str | None) -> str:
     """SCENARIO.md, the scenario written out as steps to run by hand: its name, description, and Gradle version, then
-    each step as a shell snippet under a `### N. <name>` heading. Expectations are comments, ./gradlew is gradle, writes are heredocs (printf where a
-    heredoc cannot hold the content), edits are diffs for patch -p1, and deletes and clears are rm -rf.
+    each step as a shell snippet under a `### N. <name>` heading. Expectations are comments, ./gradlew is gradle,
+    writes are heredocs (printf where a heredoc cannot hold the content), edits are diffs for patch -p1, and deletes
+    and clears are rm -rf.
 
     files is the project's starting state as zipped, path -> bytes. The text depends on nothing else, so the same
     scenario gives the same bytes on every machine. A shell step that uses the wrapper, which is not in the zip, is
@@ -2231,7 +2240,7 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
     """
     out = [f"# {_visible(scenario.name)}", ""]
     if scenario.description:                                 # a fence in it would swallow the rest: escaped
-        out += [re.sub(r"^( {0,3})([`~]{3}|<)", r"\1\\\2", _visible(scenario.description), flags=re.M), ""]
+        out += [_DESCRIPTION_ESCAPE_RE.sub(r"\1\\\2", _visible(scenario.description)), ""]
     out += [f"Needs Gradle{' ' + gradle_version if gradle_version else ''}, as `gradle` on PATH.", "",
             "## Steps", "",
             "Run each block from the directory this file is in, in order. What to expect from a block is in its comments.",
@@ -2493,8 +2502,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_zip = sub.add_parser(
         "zip", help="write the scenario as a zip: the project's starting state and a SCENARIO.md with the steps",
         description=f"Write a zip with the project's starting state, as setup lays it out but without the wrapper, and "
-                    f"a {SCENARIO_MD}: the scenario written out as steps to run by hand, each a shell snippet. The zip holds one folder, named after the "
-                    f"zip's own stem. No Gradle runs. On success, the zip's path is the only line on stdout.")
+                    f"a {SCENARIO_MD}: the scenario written out as steps to run by hand, each a shell snippet. The "
+                    f"zip holds one folder, named after the zip's own stem. No Gradle runs. On success, the zip's path "
+                    f"is the only line on stdout.")
     p_zip.add_argument("scenario", type=Path, help=SCENARIO_HELP)
     p_zip.add_argument("-o", dest="output", type=Path, metavar="PATH",
                        help="the zip to write, which must not exist (default: <stem>.zip in the working directory, or "

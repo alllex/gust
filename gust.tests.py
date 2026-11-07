@@ -2576,7 +2576,7 @@ rm -rf build
             self.assertTrue(err.startswith(f"ERROR: --gradle {value!r}: a Gradle version such as 9.7.1 is expected here"), err)
         self.assertEqual(self.cli("zip", str(scenario), "-o", "v.zip", "--gradle", "9.8.0-rc-2")[0], gs.EXIT_OK)
         own = self.scenario_file('[setup.layout.project]\n"SCENARIO.md" = "x"\n[[steps]]\nrun.gradle = "help"\n', "own.toml")
-        self.assertEqual(self.cli("zip", str(own)), (gs.EXIT_ERROR, "", "ERROR: the project has a SCENARIO.md of its own, where the zip's SCENARIO.md goes\n"))
+        self.assertEqual(self.cli("zip", str(own)), (gs.EXIT_ERROR, "", "ERROR: the project has 'SCENARIO.md', where the zip's SCENARIO.md goes\n"))
         self.assertEqual(sorted(p.name for p in self.tmp.glob("*.zip")), ["s.zip", "v.zip"])
 
     def test_a_failure_leaves_no_zip(self):
@@ -2708,7 +2708,7 @@ rm -rf build
                 self.readme(f'[[steps]]\nwrite."{rel}" = "x\\n"\n')
             self.assertEqual(str(cm.exception), f"steps[1].write: {rel!r} is where the zip's SCENARIO.md goes")
         scenario = self.scenario_file('[setup.layout.project]\n"Scenario.md" = "x\\n"\n[[steps]]\nrun.gradle = "help"\n', "own.toml")
-        self.assertEqual(self.cli("zip", str(scenario)), (gs.EXIT_ERROR, "", "ERROR: the project has a SCENARIO.md of its own, where the zip's SCENARIO.md goes\n"))
+        self.assertEqual(self.cli("zip", str(scenario))[0], gs.EXIT_ERROR)
 
     def test_delete_or_clear_of_scenario_md_is_refused(self):
         for kind, rel in (("delete", "SCENARIO.md"), ("clear", "scenario.md")):
@@ -2734,6 +2734,27 @@ rm -rf build
         self.assertIn("starts with E, EO, or EOF and then a non-ASCII", " ".join(gs.FORMAT_SPEC.split()))
         for content, heredoc in (("E\u00e9\n", False), ("EO\u00e9\n", False), ("EOF\u00e9\n", False), ("EOF2\u00e9\n", True), ("x\u00e9\n", True)):
             self.assertEqual(gs._sh_write("f", content)[0][0].startswith("cat "), heredoc, content)
+
+    def test_html_after_list_or_quote_markers_is_escaped_but_not_an_autolink(self):
+        readme = self.readme('description = """- <!-- a\n> <pre>\n  1. > <!-- b\n<https://github.com/gradle/gradle/issues/1>\n'
+                             '<me@example.com> and <b>"""\n[[steps]]\nrun.gradle = "help"\n')
+        self.assertIn("\n- \\<!-- a\n> \\<pre>\n  1. > \\<!-- b\n<https://github.com/gradle/gradle/issues/1>\n<me@example.com> and <b>\n", readme)
+
+    def test_remote_links_to_scenario_md_or_the_project_dir_are_refused(self):
+        for name, rel, to in (("r1", "notes.md", "SCENARIO.md"), ("r2", "here", "."), ("r3", "sub/up", ".."), ("r4", "sub/s", "../scenario.md")):
+            link = self.remote({rel: ("120000", to.encode()), "a.txt": ("100644", b"a\n")}, name)
+            scenario = self.scenario_file(f'setup.layout.remote = "{link}"\n[[steps]]\nrun.gradle = "help"\n', f"{name}.toml")
+            self.assertEqual(self.cli("zip", str(scenario)), (gs.EXIT_ERROR, "", f"ERROR: setup.layout.remote: the link {rel!r} points to "
+                                                                               f"{to!r}, the project dir or its SCENARIO.md\n"))
+
+    def test_the_refusal_of_an_own_scenario_md_names_the_file(self):
+        for rel in ("Scenario.md", "scenario.md/notes.txt"):
+            scenario = self.scenario_file(f'[setup.layout.project]\n"{rel}" = "x\\n"\n[[steps]]\nrun.gradle = "help"\n', "own.toml")
+            self.assertEqual(self.cli("zip", str(scenario)), (gs.EXIT_ERROR, "", f"ERROR: the project has {rel!r}, where the zip's SCENARIO.md goes\n"))
+
+    def test_no_line_of_gust_py_is_longer_than_140(self):
+        long = [n for n, line in enumerate(Path(gs.__file__).read_text(encoding="utf-8").splitlines(), start=1) if len(line) > 140]
+        self.assertEqual(long, [])
 
 class WindowsTest(GustCase):
     """The Windows helpers, run on any OS, some with gs.WINDOWS patched."""
