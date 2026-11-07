@@ -41,7 +41,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 
-__version__ = "13-dev"
+__version__ = "13"
 
 WINDOWS = os.name == "nt"
 
