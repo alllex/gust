@@ -1014,6 +1014,7 @@ class SetupTest(GustCase):
             (b"a\rb\rc", "a\nb", "x\ny\r\nz", b"x\ry\r\nz\rc"),                       # CR: \r\n in with is written as it is
             (b"a\nb\r\nc\n", "b\nc", "B\nC", b"a\nB\nC\n"),                           # both kinds: with as written
             (b"a\rb\nc", "c", "x\ny", b"a\rb\nx\ny"),                                   # CR and LF: with as written
+            (b"a\rb\r\nc", "b\nc", "x\ny", b"a\rx\ny"),                                 # CR and CRLF: with as written
             (b"a\r\nb\nc\n", "a\r\nb", "x\r\ny", b"x\r\ny\nc\n"),
         ]:
             path.write_bytes(before)
@@ -1039,6 +1040,8 @@ class SetupTest(GustCase):
             (b"}\r\n}\r\n}\r\n", "}\n}", 2),                                         # with a line end of any kind
             (b"}\r}\r}\r", "}\n}", 2),
             (b"aaa", "aa", 2),
+            ("\u00e9.\u00e9.\u00e9".encode(), "\u00e9.\u00e9", 2),                       # multi-byte UTF-8
+            (b"a\rb\r\na\rb", "a\nb", 2),                                              # CR and CRLF in one file
         ]:
             path.write_bytes(before)
             with self.assertRaises(gs.StepError) as cm:
