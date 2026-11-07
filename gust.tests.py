@@ -1981,6 +1981,23 @@ class CliTest(GustCase):
         self.assertEqual(code, gs.EXIT_ERROR)
         self.assertRegex(out, r"\$ nostop --stop\nERROR: exit=3 in \d+\.\ds -> stop-daemons\.log\nresult: ERROR\nout:      ")
 
+    def test_a_project_table_binary_is_refused_until_set_up(self):
+        g = runnable("g")
+        content = "@echo Gradle 9.7.1" if gs.WINDOWS else "#!/bin/sh\necho 'Gradle 9.7.1'"
+        s = self.scenario_file(f"[setup.layout.project]\n\"tools/{g}\" = '''{content}\n'''\n[[steps]]\nrun.gradle = \"help\"\n")
+        for command in ("check", "run", "setup"):                                       # probed before anything is laid out
+            with self.subTest(command=command):
+                code, out, err = self.cli(command, str(s), "--gradle", f"./tools/{g}")
+                self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
+                self.assertEqual(err.strip(), f"ERROR: --gradle './tools/{g}': tools/{g} is in the project table alone, which is "
+                                              f"laid out only after Gradle is probed; use a binary outside the project, or one in "
+                                              f"the remote checkout")
+        self.assertEqual(self.cli("setup", str(s))[0], gs.EXIT_OK)                      # on disk now, so stop-daemons takes it
+        (self.tmp / "s.out" / "project" / "tools" / g).chmod(0o755)                     # the project table's files are not executable
+        code, out, _ = self.cli("stop-daemons", str(s), "--gradle", f"./tools/{g}")
+        self.assertEqual(code, gs.EXIT_OK, out)
+        self.assertIn(f"gradle:   ./tools/{g} 9.7.1 (--gradle)\n", out)
+
     def test_setup_only(self):
         s = self.scenario_file('name = "m"\ndescription = "Set up only."\n[setup.layout.project]\n"x" = "y"\n[[steps]]\nrun.shell = "false"')
         code, out, _ = self.cli("setup", str(s), "--out", str(self.tmp / "m"))

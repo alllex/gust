@@ -126,6 +126,10 @@ The Gradle the steps run with is the first of:
 
 1. `--gradle <bin>`: a distribution or a local build, as a name on PATH or in
    the working directory, or as a path. A value with a `/` is always a path.
+   A `./` path is relative to the project dir, and is probed before anything
+   is laid out, so it must be in the remote checkout or the project dir in
+   place, or, for `stop-daemons`, in the set-up project; one in the project
+   table alone is refused.
 2. `--gradle 9.9.0`: a version, when the value is not a binary on PATH or in
    the working directory. A wrapper for it is installed into the project first,
    with `gradle` from PATH, so a local Gradle installation is assumed and the

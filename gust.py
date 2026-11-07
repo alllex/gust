@@ -1633,8 +1633,11 @@ def settle_gradle(scenario: Scenario, cli_value: str | None, root: Path | None, 
             raise GustError(f'setup.gradle = "wrapper" but {WRAPPER_FILE} is not among the project\'s files')
         if binary != WRAPPER and shutil.which(binary) is None:
             raise GustError(f"'{binary}' is not on PATH")
-    if binary.startswith("./") and root is None:                         # project-relative, with nothing on disk yet
-        raise GustError("the wrapper's gradle/wrapper/gradle-wrapper.jar cannot come from an inline layout; use setup.layout.remote")
+    if binary.startswith("./") and (root is None or not (root / binary).is_file()):   # in the project table alone, not on disk
+        if binary == WRAPPER and root is None:
+            raise GustError("the wrapper's gradle/wrapper/gradle-wrapper.jar cannot come from an inline layout; use setup.layout.remote")
+        raise GustError(f"{label}: {Path(binary).as_posix()} is in the project table alone, which is laid out only after Gradle "
+                        f"is probed; use a binary outside the project, or one in the remote checkout")
     return GradleChoice(binary, source, version=probe_gradle(binary, label, root if root is not None else Path.cwd(), user_home))
 
 
