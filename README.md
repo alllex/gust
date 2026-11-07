@@ -188,7 +188,8 @@ The working directory also gets `.gust/`, a cache that is safe to delete (set
 `GUST_DIR` to put it elsewhere):
 
 - `remotes/`: one git checkout per `setup.layout.remote`, shallow where
-  possible.
+  possible, named after the URL and the commit. A long URL is cut to a prefix
+  and a hash, so the name stays within 100 characters.
 - `shared-gradle-user-home/`: the Gradle user home for every Gradle invocation,
   so distributions, dependency caches, and daemons stay here instead of in
   `~/.gradle`.

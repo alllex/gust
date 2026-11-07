@@ -761,6 +761,21 @@ class LayoutRemoteTest(GustCase):
                 self.assertEqual((code, out), (gs.EXIT_ERROR, ""))                     # the remote lines come with the header
                 self.assertIn("--gradle 'nosuch': not found on PATH", err)
 
+    def test_a_long_url_gets_a_checkout_dir_name_within_the_limit(self):
+        url = "https://example.com/" + "a" * 300 + ".git"                               # longer than any file name may be
+        os.environ.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0=f"url.{self.url}.insteadOf",   # fetched from the fixture
+                          GIT_CONFIG_VALUE_0=url)
+        s = self.write(f'setup.layout.remote = "{url}#{self.sha}"')
+        code, out, err = self.cli("run", str(s), "--keep-daemons")
+        self.assertEqual((code, err), (gs.EXIT_OK, ""), out)
+        checkout = gs.load_scenario(s.read_text(), base_dir=self.tmp).remote.dir
+        self.assertEqual(checkout.parent, self.gust / "remotes")
+        self.assertRegex(checkout.name, rf"^example\.com-a+-[0-9a-f]{{12}}-{self.sha}$")    # a readable prefix, a hash of the URL
+        self.assertLessEqual(len(checkout.name), gs.REMOTE_NAME_MAX)
+        self.assertIn(f"checkout: {checkout}\n", out)
+        code, out, _ = self.cli("run", str(s), "--keep-daemons")                         # the same URL, the same dir
+        self.assertIn(f"checkout: {checkout} (cached)\n", out)
+
     def test_check_refuses_a_checkout_dir_that_is_no_checkout(self):
         s = self.write(f'setup.layout.remote = "{self.url}#{self.sha}"')
         junk = gs.load_scenario(s.read_text(), base_dir=self.tmp).remote.dir

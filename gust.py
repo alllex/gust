@@ -24,6 +24,7 @@ if sys.version_info < (3, 11):  # ahead of any import that needs 3.11; keep this
 import argparse
 import difflib
 import functools
+import hashlib
 import json
 import os
 import posixpath
@@ -66,6 +67,7 @@ WRAPPER_LABEL = "[WRP]"
 GUST_DIR_ENV = "GUST_DIR"        # where .gust goes (default: <working dir>/.gust)
 SHARED_HOME = "shared-gradle-user-home"   # in .gust: the default Gradle user home
 REMOTES_DIR = "remotes"                   # in .gust: one checkout per remote
+REMOTE_NAME_MAX = 100                     # the longest checkout dir name; a longer one gets cut, for Windows' path limits too
 
 # --- Gradle
 GRADLE_ENV = "GRADLE"            # for shell steps: the Gradle binary
@@ -191,6 +193,9 @@ setup.layout                        base or remote (not both), plus the project 
                                     are not accepted, so a cached checkout is never stale. Each
                                     remote is fetched once into .gust/remotes/<host>-<path>-<sha>
                                     and reused while its HEAD is that commit. .git is not copied.
+                                    In a name longer than 100 characters, <host>-<path> is cut to
+                                    a prefix plus a hash of the URL, so one URL always gets the
+                                    same dir.
   project       table    optional   the project's files; see setup.layout.project
 
 setup.layout.project                the project table (becomes <out>/project)
@@ -869,9 +874,16 @@ class Remote:
 
     @property
     def identity(self) -> str:
+        """<host>-<path>-<sha>, from the URL. Past REMOTE_NAME_MAX, <host>-<path> is cut to a prefix plus a hash of the
+        whole URL, so the same URL always maps to the same dir, and a name within the limit stays as it was."""
         host_path = re.sub(r"^[a-z+]+://", "", self.url)
         host_path = re.sub(r"\.git$", "", host_path)
-        return re.sub(r"[^A-Za-z0-9._-]+", "-", host_path).strip("-") + "-" + self.sha
+        name = re.sub(r"[^A-Za-z0-9._-]+", "-", host_path).strip("-")
+        if len(name) + 1 + len(self.sha) > REMOTE_NAME_MAX:
+            digest = hashlib.sha256(self.url.encode()).hexdigest()[:12]
+            prefix = name[:REMOTE_NAME_MAX - len(self.sha) - len(digest) - 2].rstrip("-.")   # no trailing dot, for Windows
+            name = f"{prefix}-{digest}" if prefix else digest
+        return name + "-" + self.sha
 
     @property
     def dir(self) -> Path:
@@ -1407,9 +1419,14 @@ def fetch_remote(scenario: Scenario, out=None, may_fetch: bool = True) -> dict |
     if shutil.which("git") is None:
         raise GustError("setup.layout.remote needs git on PATH")
     target = remote.dir
-    cached = (target / ".git").exists()
-    if not cached and target.exists():
-        raise GustError(f"checkout dir exists but is not a git checkout, so it is left alone: {target}")
+    try:
+        cached = (target / ".git").exists()
+        if not cached and target.exists():
+            raise GustError(f"checkout dir exists but is not a git checkout, so it is left alone: {target}")
+        if not cached and may_fetch:
+            target.mkdir(parents=True)                    # ahead of the progress lines: none on a failure here
+    except OSError as e:                                  # the path is too long, say
+        raise GustError(f"cannot use {target} as the checkout dir: {e.strerror}") from None
     if not cached and not may_fetch:
         return None
     fetched = False
@@ -1424,7 +1441,6 @@ def fetch_remote(scenario: Scenario, out=None, may_fetch: bool = True) -> dict |
             print(f"remote:   {remote.link}", file=out)
             print(f"checkout: {target}", file=out)
             print(f"          fetching {remote.sha} from {remote.url}", file=out)
-        target.mkdir(parents=True)
         try:
             _git(target, "init", "-q")
             _git(target, "remote", "add", "origin", remote.url)
