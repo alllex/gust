@@ -203,12 +203,13 @@ gust zip loop.toml -o ~/repro-39193.zip   # unzips to repro-39193/
 The zip holds the project's starting state, as `setup` lays it out, and a
 `SCENARIO.md`: the scenario written out as steps to run by hand. It has the
 scenario's name, description, and Gradle version, and each step as a shell
-snippet: `gradle <args>` for a Gradle step, with the expectations as comments,
-a heredoc for a write, a diff for `patch -p1` for an edit, and `rm -rf` for a
-delete or clear. The commands of a file step are joined with `&&`, so its block
-stops at the first failure. The wrapper is left out, and so is the scenario
-file. In a shell step, `./gradlew` becomes `gradle`, and a step that still uses
-the wrapper, such as `test -x gradlew`, is refused.
+snippet: `gradle <args>` for a Gradle step, a heredoc for a write, a diff for
+`patch -p1` for an edit, and `rm -rf` for a delete or clear. A snippet holds
+commands only, so it can be pasted into sh, bash, or zsh; what to expect from it
+is in the text above it. The commands of a file step are joined with `&&`, so
+its block stops at the first failure. The wrapper is left out, and so is the
+scenario file. In a shell step, `./gradlew` becomes `gradle`, and a step that
+still uses the wrapper, such as `test -x gradlew`, is refused.
 
 - No Gradle runs, and nothing is installed. The Gradle version comes from
   `setup.gradle`, or from the wrapper's properties when the steps run with the
