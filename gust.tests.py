@@ -3496,7 +3496,8 @@ class SpecTest(unittest.TestCase):
                      "out directory", "\u2014", "--trust-wrapper", "sha256", "checksum", "versions feed", "bootstrap", "verif", ".prev",
                      "previous:", "(per ", "(reused)", "must end in .toml", "three meanings", "step SCENARIO", "gust step",
                      "N [N ...]", "step through", "last full run", "deviat", "DEVIATION", "status", "ok: ", "result: ok",
-                     "result: error", "exit 0 in", "exit N", "`error: "):
+                     "result: error", "exit 0 in", "exit N", "`error: ", "result: set up", "FAILURE", "SUCCESS (", "`success`",
+                     '"success"'):
             for where, text in (("spec", gs.FORMAT_SPEC), ("README", readme), ("help", help_out.getvalue())):
                 self.assertNotIn(gone, text, f"{gone!r} in {where}")
         for command in ("check SCENARIO", "stop-daemons SCENARIO [--out DIR] [--gradle BIN] [--gradle-user-home DIR]"):

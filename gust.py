@@ -267,7 +267,7 @@ steps[].edit[]
                                     is written as the file's line end
 
 Each check of a run step comes out as expected or unexpected. The run stops at
-the first run step with an unexpected check (a failure), or at a write, edit,
+the first run step with an unexpected check (the scenario fails), or at a write, edit,
 delete, or clear that cannot be applied (an error).
 
 Example
@@ -624,8 +624,9 @@ marked ? is left out when it has no value, and its comment says when it is there
     install?: Install                       // with a Gradle version in play, once its install command started
     result: "pass" | "fail" | "error"
     error?: string                          // with result "error": the step's message, `wrapper install failed:
-                                            // exit=N -> install-wrapper.log`, or `daemon stop failed: exit=N
-                                            // -> stop-daemons-before.log`
+                                            // exit=N -> install-wrapper.log`, `daemon stop failed: exit=N
+                                            // -> stop-daemons-before.log`, or the message of a [WRP] install or
+                                            // [BEF] stop command that could not start
     steps: (RunStep | FileStep)[]           // the steps that started, in order; [] for a run that ended at
                                             // [WRP] or [BEF]
     stop_daemons?: StopDaemons              // without --keep-daemons, once the run got past [WRP]
@@ -2056,15 +2057,15 @@ def print_header(scenario: Scenario, out_dir: Path | None, user_home: Path, choi
     print(f"gradle:   {choice.header}", file=out)
 
 
-def print_footer(run: Run, outcome: str | None = None, started: int = 0) -> None:
+def print_footer(run: Run, outcome: str | None = None) -> None:
     """The footer of run, setup, and stop-daemons: a blank line, the out dir again, to have it at hand after a long
-    console, and then the scenario: line, with the outcome word: `PASS, 3/3 steps` (the steps that started, of all),
+    console, and then the scenario: line, with the outcome word: `PASS, 3/3 steps` (with PASS, every step started),
     `FAIL at step 2/3`, `ERROR at [WRP]`. Without an outcome (setup and stop-daemons that went through), out: is the
     last line."""
     print(f"\nout:      {run.out_dir}", file=run.out)
     if outcome == PASS:
         n = len(run.scenario.steps)
-        print(f"scenario: {paint(PASS, run.color)}, {started}/{n} step{'s' if n != 1 else ''}", file=run.out)
+        print(f"scenario: {paint(PASS, run.color)}, {n}/{n} step{'s' if n != 1 else ''}", file=run.out)
     elif outcome is not None:
         print(f"scenario: {paint(outcome, run.color)}" + (f" at {run.at}" if run.at else ""), file=run.out)
 
@@ -2141,7 +2142,7 @@ def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
         # the steps began, so a stop after them, after an error in them too
         summary.stop_daemons["after"] = _stop_daemons(run, AFTER_LABEL, "stop-daemons-after.log", full=False, warn=True)
     (run.out_dir / "summary.json").write_text(summary.to_json() + "\n", encoding="utf-8", newline="")
-    print_footer(run, {"pass": PASS, "fail": FAIL, "error": ERROR}[summary.result], len(summary.steps))
+    print_footer(run, {"pass": PASS, "fail": FAIL, "error": ERROR}[summary.result])
     return summary
 
 

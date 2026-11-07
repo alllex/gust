@@ -261,7 +261,7 @@ still uses the wrapper, such as `test -x gradlew`, is refused.
 | --- | --- |
 | `0` | pass: every check came out as expected |
 | `1` | fail: a check came out unexpected |
-| `2` | error: gust could not do something: bad input (a failed precondition, a malformed scenario, bad arguments), a step that could not be carried out, a failed wrapper install, or a failed daemon stop before the steps |
+| `2` | error: gust could not do something: bad input (a failed precondition, a malformed scenario, bad arguments), a step that could not be carried out, a failed wrapper install, or a failed daemon stop before the steps or of `stop-daemons` |
 
 The footer's last line has the same word: `scenario: PASS, 3/3 steps`,
 `scenario: FAIL at step 2/3`, `scenario: ERROR at step 2/3`, or, for a block
