@@ -831,6 +831,12 @@ class LayoutRemoteTest(GustCase):
         with self.assertRaises(gs.GustError) as cm:
             self.run_scenario(inline, self.tmp / "i.out", stop_daemons=False)
         self.assertIn("cannot come from an inline layout", str(cm.exception))
+        tabled = self.load(f'setup.gradle = "wrapper"\nsetup.layout.remote = "{self.url}#{self.sha}/sub"\n'
+                           f'[setup.layout.project]\n"{WRAPPER_FILE}" = "not run"', '[[steps]]\nrun.gradle = "help"\n')
+        with self.assertRaises(gs.GustError) as cm:                                      # in the table, not in the checkout
+            self.run_scenario(tabled, self.tmp / "t.out", stop_daemons=False)
+        self.assertEqual(str(cm.exception), f'setup.gradle "wrapper": {WRAPPER_FILE} is in the project table alone, which is laid '
+                                            f'out only after Gradle is probed; the wrapper must be in the remote checkout')
         with self.assertRaises(gs.GustError) as cm:
             gs.load_scenario('name = "s"\nsetup.gradle = "latest"\n[[steps]]\nrun.shell = "true"')
         self.assertIn("setup.gradle: must be 'wrapper' or a Gradle version such as '9.9.0', got 'latest'", str(cm.exception))
@@ -2012,6 +2018,14 @@ class CliTest(GustCase):
         code, out, _ = self.cli("stop-daemons", str(s), "--gradle", f"./tools/{g}")
         self.assertEqual(code, gs.EXIT_OK, out)
         self.assertIn(f"gradle:   ./tools/{g} 9.7.1 (--gradle)\n", out)
+
+    def test_stop_daemons_probes_a_project_table_binary_gone_from_the_set_up_project(self):
+        s = self.scenario_file('[setup.layout.project]\n"tools/g" = "x"\n[[steps]]\nrun.gradle = "help"\n')
+        self.assertEqual(self.cli("setup", str(s))[0], gs.EXIT_OK)
+        (self.tmp / "s.out" / "project" / "tools" / "g").unlink()                       # gone, as a step could make it
+        code, out, err = self.cli("stop-daemons", str(s), "--gradle", "./tools/g")
+        self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
+        self.assertTrue(err.startswith("ERROR: --gradle './tools/g': cannot run './tools/g --version'"), err)   # the probe's message
 
     def test_check_needs_gradle_where_run_does(self):
         s = self.scenario_file(MINIMAL)                                                 # shell only
