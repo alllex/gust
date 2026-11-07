@@ -572,8 +572,8 @@ edit = [{ file = "src/A.java", replace = "base", with = "edited" }]
         self.assertIn("build.gradle.kts", s.files)
 
 
-class LayoutRemoteTest(GustCase):
-    """Uses a local git repository as the remote; no network."""
+class RemoteRepo:
+    """A local git repository as the remote, made once per test class; no network."""
 
     @classmethod
     def setUpClass(cls):
@@ -599,6 +599,10 @@ class LayoutRemoteTest(GustCase):
     def git(cls, *a):
         env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}   # no signing, hooks, templates
         return subprocess.run(["git", *a], cwd=cls.repo, check=True, capture_output=True, text=True, env=env).stdout.strip()
+
+
+class LayoutRemoteTest(RemoteRepo, GustCase):
+    """Uses a local git repository as the remote; no network."""
 
     def setUp(self):
         super().setUp()
