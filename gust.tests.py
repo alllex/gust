@@ -742,7 +742,7 @@ class LayoutRemoteTest(GustCase):
         self.assertIn("cannot come from an inline layout", str(cm.exception))
         with self.assertRaises(gs.GustError) as cm:
             gs.load_scenario('name = "s"\nsetup.gradle = "latest"\n[[steps]]\nrun.shell = "true"')
-        self.assertIn("setup.gradle: must be 'wrapper' or a Gradle version such as '9.7.1', got 'latest'", str(cm.exception))
+        self.assertIn("setup.gradle: must be 'wrapper' or a Gradle version such as '9.9.0', got 'latest'", str(cm.exception))
         with self.assertRaises(gs.GustError):
             gs.load_scenario('name = "s"\nsetup.gradle = 1\n[[steps]]\nrun.shell = "true"')
 
@@ -789,7 +789,7 @@ class LayoutRemoteTest(GustCase):
         self.assertIn(f"gradle:   {WRAPPER} 9.7.0 (--gradle, installed by gradle)", self.out.getvalue())
         with self.assertRaises(gs.GustError) as cm:
             self.run_scenario(scenario, self.tmp / "d.out", gradle="latest", stop_daemons=False)
-        self.assertEqual(str(cm.exception), "--gradle 'latest': not found on PATH and not a Gradle version such as 9.7.1")
+        self.assertEqual(str(cm.exception), "--gradle 'latest': not found on PATH and not a Gradle version such as 9.9.0")
         self.assertFalse((self.tmp / "d.out").exists())
 
     def test_gradle_value_resolution(self):
@@ -839,8 +839,8 @@ class LayoutRemoteTest(GustCase):
         self.assertEqual(str(cm.exception), "gradle: not a Gradle binary (no 'Gradle <version>' line in the output of --version)")
         self.fake_gradle_on_path()
         # 3. anything else is a version, installed with gradle from PATH whatever the version string says
-        refused("grdl", "--gradle 'grdl': not found on PATH and not a Gradle version such as 9.7.1")
-        refused("9", "--gradle '9': not found on PATH and not a Gradle version such as 9.7.1")
+        refused("grdl", "--gradle 'grdl': not found on PATH and not a Gradle version such as 9.9.0")
+        refused("9", "--gradle '9': not found on PATH and not a Gradle version such as 9.9.0")
         summary = self.run_scenario(scenario, self.tmp / "d.out", gradle="9.99.0", stop_daemons=False)
         self.assertEqual(summary.install, {"version": "9.99.0", "log": "install-wrapper.log", "exit_code": 0})
 
@@ -897,7 +897,7 @@ class LayoutRemoteTest(GustCase):
             self.assertEqual(code, gs.EXIT_ERROR, argv)
             errors.append(err.strip())
         self.assertEqual(errors, [
-            "ERROR: --gradle 'nope': not found on PATH and not a Gradle version such as 9.7.1",
+            "ERROR: --gradle 'nope': not found on PATH and not a Gradle version such as 9.9.0",
             "ERROR: --gradle './nope/gradle' is relative to the project dir but no such file is in the project",
             "ERROR: --gradle '9.7.1' is a version, but nothing is installed here; pass a binary (a name or a path)"])   # the first run set the project up
         code, out, _ = self.cli("setup", str(s), "--gradle", "9.7.0")
@@ -2719,7 +2719,7 @@ rm -rf build
         for value in ("./gradlew", "gecho", str(self.gecho)):
             code, out, err = self.cli("zip", str(scenario), "-o", "v.zip", "--gradle", value)
             self.assertEqual((code, out), (gs.EXIT_ERROR, ""), value)
-            self.assertTrue(err.startswith(f"ERROR: --gradle {value!r}: a Gradle version such as 9.7.1 is expected here"), err)
+            self.assertTrue(err.startswith(f"ERROR: --gradle {value!r}: a Gradle version such as 9.9.0 is expected here"), err)
         self.assertEqual(self.cli("zip", str(scenario), "-o", "v.zip", "--gradle", "9.8.0-rc-2")[0], gs.EXIT_OK)
         own = self.scenario_file('[setup.layout.project]\n"SCENARIO.md" = "x"\n[[steps]]\nrun.gradle = "help"\n', "own.toml")
         self.assertEqual(self.cli("zip", str(own)), (gs.EXIT_ERROR, "", "ERROR: the project has 'SCENARIO.md', where the zip's SCENARIO.md goes\n"))
