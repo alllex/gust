@@ -961,6 +961,11 @@ class LayoutRemoteTest(GustCase):
         code, out, _ = self.cli("check", str(s), "--gradle", "9.7.0")
         self.assertEqual(code, gs.EXIT_OK)
         self.assertIn(f"gradle:   {WRAPPER} 9.7.0 (--gradle, installed by gradle; not checked, remote not cached)\n", out)
+        local = self.scenario_file(f'setup.layout.remote = "{self.url}#{self.sha}"\n[setup.layout.project]\n"mygradle" = ""\n'
+                                   '[[steps]]\nrun.gradle = "help"\n', "local.toml")            # a project binary, not on disk yet
+        code, out, _ = self.cli("check", str(local), "--gradle", "./mygradle")
+        self.assertEqual(code, gs.EXIT_OK, out)
+        self.assertIn("gradle:   ./mygradle (--gradle; not checked, remote not cached)\n", out)
         self.assertFalse((self.gust / "remotes").exists())
         self.script("notgradle", NOT_GRADLE)
         code, _, err = self.cli("check", str(s), "--gradle", "notgradle")
