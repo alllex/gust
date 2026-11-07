@@ -1254,21 +1254,22 @@ def fetch_remote(scenario: Scenario, out=None, may_fetch: bool = True) -> dict |
     remote = scenario.remote
     if remote is None:
         return None
-    target = remote.dir
-    if not may_fetch and not (target / ".git").exists():
-        return None
     if shutil.which("git") is None:
         raise GustError("setup.layout.remote needs git on PATH")
+    target = remote.dir
+    cached = (target / ".git").exists()
+    if not cached and target.exists():
+        raise GustError(f"checkout dir exists but is not a git checkout, so it is left alone: {target}")
+    if not cached and not may_fetch:
+        return None
     fetched = False
-    if (target / ".git").exists():
+    if cached:
         head = _git(target, "rev-parse", "HEAD").decode().strip()
         if not head.startswith(remote.sha) and not remote.sha.startswith(head):
             raise GustError(f"checkout {target} is at {head[:12]}, not {remote.sha}; delete it to refetch")
         if not remote.source.is_dir():
             raise GustError(f"setup.layout.remote: {remote.subdir!r} is not a directory in {target}")
     else:
-        if target.exists():
-            raise GustError(f"checkout dir exists but is not a git checkout, so it is left alone: {target}")
         if out is not None:
             print(f"remote:   {remote.link}", file=out)
             print(f"checkout: {target}", file=out)

@@ -679,6 +679,17 @@ class LayoutRemoteTest(GustCase):
                 self.assertEqual((code, out), (gs.EXIT_ERROR, ""))                     # the remote lines come with the header
                 self.assertIn("--gradle 'nosuch': not found on PATH", err)
 
+    def test_check_refuses_a_checkout_dir_that_is_no_checkout(self):
+        s = self.write(f'setup.layout.remote = "{self.url}#{self.sha}"')
+        junk = gs.load_scenario(s.read_text(), base_dir=self.tmp).remote.dir
+        junk.mkdir(parents=True)
+        (junk / "file").write_text("")
+        for command in ("check", "run"):                                                 # as run refuses it
+            with self.subTest(command=command):
+                code, out, err = self.cli(command, str(s))
+                self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
+                self.assertIn("is not a git checkout, so it is left alone", err)
+
     def test_check_takes_a_project_binary_from_an_uncached_remote(self):
         s = self.write(f'setup.layout.remote = "{self.url}#{self.sha}"', '[[steps]]\nrun.gradle = "help"\n')
         code, out, err = self.cli("check", str(s), "--gradle", WRAPPER)              # in the commit, not fetched yet
