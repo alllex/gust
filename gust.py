@@ -588,11 +588,19 @@ a `### N. <step name>` heading with its own sh block:
   write           a `cat > <file> <<'EOF'` heredoc (EOF2, EOF3, ... when a line
                   of the file is EOF), with `mkdir -p` for a new directory. A file
                   without a final newline, or with a carriage return or other
-                  control character, is written with printf
+                  control character, is written with printf, and so is one with
+                  a line where dash before 0.5.13 would drop a byte: a line that
+                  starts with a part of the delimiter, then a non-ASCII character
   edit            a unified diff in a `patch -p1` heredoc; for a file with a
-                  carriage return or whitespace in its path, the whole file as
-                  for write, with its line ends kept
+                  carriage return, whitespace in its path, or the name -, the
+                  whole file as for write, with its line ends kept
   delete, clear   `rm -rf <dir>`, and for clear `mkdir <dir>` after it
+
+In the block of a write, edit, delete, or clear, the commands are joined with
+&&, so the block stops at its first failure, such as a diff that does not
+apply. The block of a run step is a plain command, since it may be expected to
+fail. A fence (``` or ~~~) at the start of a line of the description is
+escaped, so the rest of REPRODUCER.md stays as it is.
 
 For the same scenario, REPRODUCER.md is the same, byte for byte, on every
 machine, and so is the zip wherever Python's zlib is the same: there is no gust
@@ -607,6 +615,9 @@ are refused:
     is no name of the form [A-Za-z0-9][A-Za-z0-9._-]*, as the top folder
   - setup.project, with nothing to lay out, and a binary for --gradle
   - an edit that cannot be applied, and an edit of a wrapper file
+  - a REPRODUCER.md in the project, or a step that writes one
+  - a name in the remote commit that a layout could not have, such as one
+    with a .. in it
   - a shell step that uses the wrapper once ./gradlew is read as gradle, such
     as `test -x gradlew` or a path under gradle/wrapper
   - a symbolic link in the remote commit that is absolute or leads out of the
@@ -2084,7 +2095,7 @@ def zip_scenario(scenario: Scenario, target: Path, gradle_version: str | None = 
     files = project_files(scenario)
     version = gradle_version or _scenario_gradle_version(scenario, files)
     files = {rel: f for rel, f in files.items() if not _is_wrapper(rel)}
-    if REPRODUCER in files:
+    if any(_is_reproducer(rel) for rel in files):
         raise GustError(f"the project has a {REPRODUCER} of its own, where the zip's {REPRODUCER} goes")
     readme = render_reproducer(scenario, {rel: data for rel, (_, data) in files.items()}, version)
     files[REPRODUCER] = (FILE_MODE, readme.encode("utf-8"))
@@ -2119,6 +2130,7 @@ def _remote_files(remote: Remote) -> dict[str, tuple[int, bytes]]:
             rel = name.decode("utf-8")
         except UnicodeDecodeError:
             raise GustError(f"setup.layout.remote: the name {name!r} is not UTF-8") from None
+        _check_relative_path(rel, f"setup.layout.remote {rel!r}")     # as a layout's names
         if kind == "blob":
             blobs.append((rel, {"100755": EXEC_MODE, "120000": LINK_MODE}.get(mode, FILE_MODE), sha))
     proc = subprocess.run(["git", "cat-file", "--batch"], cwd=remote.dir, capture_output=True,
@@ -2142,6 +2154,10 @@ def _check_link(rel: str, target: bytes) -> None:
     inside = posixpath.normpath(posixpath.join(posixpath.dirname(rel), to.replace("\\", "/")))
     if posixpath.isabs(to) or PureWindowsPath(to).anchor or inside == ".." or inside.startswith("../"):
         raise GustError(f"setup.layout.remote: the link {rel!r} points to {to!r}, outside the project")
+
+
+def _is_reproducer(rel: str) -> bool:
+    return rel == REPRODUCER or rel.startswith(REPRODUCER + "/")
 
 
 def _is_wrapper(rel: str) -> bool:
@@ -2197,8 +2213,8 @@ def render_reproducer(scenario: Scenario, files: dict[str, bytes], gradle_versio
     refused.
     """
     out = [f"# {_visible(scenario.name)}", ""]
-    if scenario.description:
-        out += [_visible(scenario.description), ""]
+    if scenario.description:                                 # a fence in it would swallow the rest: escaped
+        out += [re.sub(r"^( {0,3})([`~]{3})", r"\1\\\2", _visible(scenario.description), flags=re.M), ""]
     out += [f"Needs Gradle{' ' + gradle_version if gradle_version else ''}, as `gradle` on PATH.", "",
             "## Steps", "",
             "Run each block from the directory this file is in, in order. What to expect from a block is in its comments.",
@@ -2210,6 +2226,7 @@ def render_reproducer(scenario: Scenario, files: dict[str, bytes], gradle_versio
     dirs = {"/".join(rel.split("/")[:k]) for rel in files for k in range(1, rel.count("/") + 1)}
     for i, step in enumerate(scenario.steps, start=1):
         body: list[str] = []
+        commands: list[Command] = []                         # a file step's commands, joined with && below
         label = step.name
         if isinstance(step, RunStep):
             if step.kind == "gradle":
@@ -2224,15 +2241,19 @@ def render_reproducer(scenario: Scenario, files: dict[str, bytes], gradle_versio
         elif isinstance(step, WriteStep):
             for rel, content in step.files.items():
                 rel = Path(rel).as_posix()
+                if _is_reproducer(rel):
+                    raise GustError(f"steps[{i}].write: {rel!r} is where the zip's {REPRODUCER} goes")
                 parent = rel.rpartition("/")[0]
                 if parent and parent not in dirs:
-                    body.append(f"mkdir -p {_sh_path(parent)}")
+                    commands.append(([f"mkdir -p {_sh_path(parent)}"], 0))
                     dirs |= {"/".join(parent.split("/")[:k]) for k in range(1, parent.count("/") + 2)}
-                body += _sh_write(rel, content)
+                commands.append(_sh_write(rel, content))
                 files[rel] = content.encode("utf-8")
         elif isinstance(step, EditStep):
             for j, edit in enumerate(step.edits, start=1):
                 rel, where = Path(edit.file).as_posix(), f"steps[{i}].edit[{j}]"
+                if _is_reproducer(rel):
+                    raise GustError(f"{where}.file: {rel!r} is where the zip's {REPRODUCER} goes")
                 if rel not in files:
                     raise GustError(f"{where}.file: {edit.file!r} is left out of the zip with the wrapper, so it cannot be edited there")
                 try:
@@ -2240,20 +2261,33 @@ def render_reproducer(scenario: Scenario, files: dict[str, bytes], gradle_versio
                 except UnicodeDecodeError:
                     raise GustError(f"{where}.file: {edit.file!r} is not UTF-8 text") from None
                 after = _edited(before, edit, where)
-                body += _sh_edit(rel, before, after)
+                commands += _sh_edit(rel, before, after)
                 files[rel] = after.encode("utf-8")
         else:
             q = _sh_path(step.dir)
-            body.append(f"rm -rf {q}" if step.kind == "delete" else f"rm -rf {q} && mkdir {q}")
+            commands.append(([f"rm -rf {q}" if step.kind == "delete" else f"rm -rf {q} && mkdir {q}"], 0))
             prefix = step.dir + "/"
             files = {rel: data for rel, data in files.items() if not rel.startswith(prefix)}
             dirs = {d for d in dirs if d != step.dir and not d.startswith(prefix)} | ({step.dir} if step.kind == "clear" else set())
+        body += _chained(commands)
         heading = _visible(label or step.label()).strip()
         if "\n" in heading:
             heading = heading.partition("\n")[0].rstrip() + " ..."
         fence = "`" * max([3] + [len(run) + 1 for run in re.findall(r"`{3,}", "\n".join(body))])
         out += [f"### {i}. {heading}", "", fence + "sh", *body, fence, ""]
     return "\n".join(out).rstrip("\n") + "\n"
+
+
+Command = tuple[list[str], int | None]   # shell lines, and the one that takes the && after the command; None: a comment
+
+
+def _chained(commands: list[Command]) -> list[str]:
+    """The lines of the commands, joined with &&, so that the block stops at the first failure."""
+    last = max((k for k, (_, at) in enumerate(commands) if at is not None), default=-1)
+    lines = []
+    for k, (command, at) in enumerate(commands):
+        lines += [line + " &&" if k < last and n == at else line for n, line in enumerate(command)]
+    return lines
 
 
 def _visible(text: str) -> str:
@@ -2284,41 +2318,50 @@ def _edited(text: str, edit: Edit, where: str) -> str:
         raise GustError(f"{where}.replace: {e}") from None
 
 
-def _sh_write(rel: str, content: str) -> list[str]:
-    """Shell lines for writing content to rel: a heredoc, with EOF2, EOF3, ... when a line of the content is EOF; printf
-    for content a heredoc cannot hold as it is: without a final newline, or with a carriage return or other control
-    character, which is written as an escape."""
+def _sh_write(rel: str, content: str) -> Command:
+    """A shell command for writing content to rel: a heredoc, with EOF2, EOF3, ... when a line of the content is EOF;
+    printf for content a heredoc cannot hold as it is: without a final newline, or with a carriage return or other
+    control character, which is written as an escape, or when no delimiter is safe from the dash bug below."""
     q = _sh_path(rel)
     if _CONTROL_RE.search(content):
         fmt = _CONTROL_RE.sub(lambda m: "\\r" if m[0] == "\r" else f"\\{ord(m[0]):03o}",
                               content.replace("\\", "\\\\").replace("%", "%%"))
         if fmt.startswith("-"):
             fmt = "\\055" + fmt[1:]                     # a leading - would be read as an option
-        return [f"printf {shlex.quote(fmt)} > {q}"]
-    if not content.endswith("\n"):
-        return [f"printf '%s' {shlex.quote(content)} > {q}"]
+        lines = f"printf {shlex.quote(fmt)} > {q}".split("\n")
+        return lines, len(lines) - 1
     lines = content[:-1].split("\n")
-    delimiter, n = "EOF", 1
-    while delimiter in lines:
-        n += 1
-        delimiter = f"EOF{n}"
-    return [f"cat > {q} <<'{delimiter}'", *lines, delimiter]
+    delimiter = next((d for d in ["EOF"] + [f"EOF{n}" for n in range(2, len(lines) + 3)] if _safe_delimiter(d, lines)), None)
+    if not content.endswith("\n") or delimiter is None:
+        lines = f"printf '%s' {shlex.quote(content)} > {q}".split("\n")
+        return lines, len(lines) - 1
+    return [f"cat > {q} <<'{delimiter}'", *lines, delimiter], 0
 
 
-def _sh_edit(rel: str, before: str, after: str) -> list[str]:
-    """Shell lines for turning before into after at rel: a unified diff for patch -p1, or the whole file written anew
-    where a diff will not do (a control character such as a carriage return, or whitespace in the path)."""
+def _safe_delimiter(delimiter: str, lines: list[str]) -> bool:
+    """Whether a heredoc of these lines may end at delimiter: no line is the delimiter, and none starts with a part of
+    it, or all of it, followed by a non-ASCII character, where dash before 0.5.13 drops a byte (Eé under EOF comes out
+    as E\\xa9)."""
+    return delimiter not in lines and not any(
+        line.startswith(delimiter[:k]) and len(line) > k and not line[k].isascii()
+        for line in lines for k in range(1, len(delimiter) + 1))
+
+
+def _sh_edit(rel: str, before: str, after: str) -> list[Command]:
+    """Shell commands for turning before into after at rel: a unified diff for patch -p1, or the whole file written
+    anew where a diff will not do: a control character such as a carriage return, whitespace in the path, or a file
+    named -, which BSD patch reads as stdout."""
     if before == after:
-        return [f"# {rel} stays as it is: its text is replaced with the same text"]
-    if _CONTROL_RE.search(before + after) or re.search(r"\s", rel):
-        return ["# the whole file, written anew instead of a diff for patch", *_sh_write(rel, after)]
+        return [([f"# {_visible(rel).replace(chr(10), '\\n')} stays as it is: its text is replaced with the same text"], None)]
+    if _CONTROL_RE.search(before + after) or re.search(r"\s", rel) or rel == "-":
+        return [(["# the whole file, written anew instead of a diff for patch"], None), _sh_write(rel, after)]
     diff = []
     lines = [re.findall(r"[^\n]*\n|[^\n]+", text) for text in (before, after)]   # split at LF only, as patch does
-    for line in difflib.unified_diff(*lines, f"a/{rel}", f"b/{rel}"):
-        if line.startswith(("--- ", "+++ ")):
+    for k, line in enumerate(difflib.unified_diff(*lines, f"a/{rel}", f"b/{rel}")):
+        if k < 2:                                             # the --- and +++ headers; any later line is content
             line = line.rstrip("\t\n") + "\n"
         diff.append(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n")
-    return ["patch -p1 <<'EOF'", *"".join(diff).rstrip("\n").split("\n"), "EOF"]
+    return [(["patch -p1 <<'EOF'", *"".join(diff).rstrip("\n").split("\n"), "EOF"], 0)]
 
 
 # --------------------------------------------------------------------------- cli

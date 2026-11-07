@@ -2241,10 +2241,10 @@ class ZipTest(GustCase):
         with zipfile.ZipFile(zip_path) as zf:
             return {i.filename: (i.external_attr >> 16, i.date_time, zf.read(i)) for i in zf.infolist()}
 
-    def run_snippets(self, readme, cwd):
-        """Run each sh block of a REPRODUCER.md in cwd, in order, as a reader would."""
+    def run_snippets(self, readme, cwd, shell=None):
+        """Run each sh block of a REPRODUCER.md in cwd, in order, as a reader would; with shell, run by that one."""
         for _, body in re.findall(r"^(`{3,})sh\n(.*?)\n\1$", readme, re.M | re.S):
-            subprocess.run(gs.shell_argv(body), cwd=cwd, check=True, capture_output=True)
+            subprocess.run([shell, "-c", body] if shell else gs.shell_argv(body), cwd=cwd, check=True, capture_output=True)
 
     def test_each_step_kind(self):
         text = (
@@ -2297,8 +2297,8 @@ gradle help && "$GRADLE" help $GRADLE_ARGS && echo $GRADLE_USER_HOME gradle
 ### 3. Write: A.java, notes.txt
 
 ```sh
-mkdir -p src/main/java
-cat > src/main/java/A.java <<'EOF'
+mkdir -p src/main/java &&
+cat > src/main/java/A.java <<'EOF' &&
 class A {}
 EOF
 cat > notes.txt <<'EOF'
@@ -2330,7 +2330,7 @@ rm -rf src/main && mkdir src/main
 ### 6. Write: B.java
 
 ```sh
-mkdir -p src/main/java
+mkdir -p src/main/java &&
 cat > src/main/java/B.java <<'EOF'
 class B {}
 EOF
@@ -2357,11 +2357,11 @@ rm -rf build
         }
         table = "\n".join(f"{json.dumps(k)} = {json.dumps(v)}" for k, v in contents.items())
         readme = self.readme(f'[[steps]]\n[steps.write]\n{table}\n')
-        self.assertIn("cat > eof.txt <<'EOF3'\nline\nEOF\n'EOF'\nEOF2\nEOF3\n", readme)
-        self.assertIn("printf 'one\\r\ntwo\\r\n' > crlf.txt\n", readme)
-        self.assertIn("""printf '%s' 'no final newline, it'"'"'s $HOME and \\n' > open.txt\n""", readme)
-        self.assertIn("printf '\\055n 100%% \\\\ \\001\\r' > dash.txt\n", readme)
-        self.assertIn("printf '%s' '' > empty.txt\n", readme)
+        self.assertIn("cat > eof.txt <<'EOF3' &&\nline\nEOF\n'EOF'\nEOF2\nEOF3\n", readme)
+        self.assertIn("printf 'one\\r\ntwo\\r\n' > crlf.txt &&\n", readme)
+        self.assertIn("""printf '%s' 'no final newline, it'"'"'s $HOME and \\n' > open.txt &&\n""", readme)
+        self.assertIn("printf '\\055n 100%% \\\\ \\001\\r' > dash.txt &&\n", readme)
+        self.assertIn("printf '%s' '' > empty.txt &&\n", readme)
         self.assertIn("````sh\n", readme)
         self.assertNotIn("\r", readme)
         project = self.tmp / "p"
@@ -2376,9 +2376,9 @@ rm -rf build
                 '[[steps]]\nedit = [{ file = "open.txt", replace = "b", with = "c" }, { file = "crlf.txt", replace = "two", with = "deux" },'
                 ' { file = "same.txt", replace = "x", with = "x" }, { file = "my file.txt", replace = "x", with = "y" }]\n')
         readme = self.readme(text)
-        self.assertIn("patch -p1 <<'EOF'\n--- a/open.txt\n+++ b/open.txt\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n"
+        self.assertIn("patch -p1 <<'EOF' &&\n--- a/open.txt\n+++ b/open.txt\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n"
                       "+c\n\\ No newline at end of file\nEOF\n", readme)
-        self.assertIn("# the whole file, written anew instead of a diff for patch\nprintf 'one\\r\ndeux\\r\n' > crlf.txt\n", readme)
+        self.assertIn("# the whole file, written anew instead of a diff for patch\nprintf 'one\\r\ndeux\\r\n' > crlf.txt &&\n", readme)
         self.assertIn("# same.txt stays as it is: its text is replaced with the same text\n", readme)
         self.assertIn("cat > 'my file.txt' <<'EOF'\ny\nEOF\n", readme)
         if shutil.which("patch"):
@@ -2409,7 +2409,7 @@ rm -rf build
     def test_paths_with_a_leading_dash(self):
         readme = self.readme('[[steps]]\nwrite = { "-d/-f.txt" = "f\\n", "-g.txt" = "g" }\n[[steps]]\nclear = "-d"\n'
                              '[[steps]]\nwrite."-e/x.txt" = "x\\n"\n[[steps]]\ndelete = "-e"\n')
-        self.assertIn("mkdir -p ./-d\ncat > ./-d/-f.txt <<'EOF'\n", readme)
+        self.assertIn("mkdir -p ./-d &&\ncat > ./-d/-f.txt <<'EOF' &&\n", readme)
         self.assertIn("rm -rf ./-d && mkdir ./-d\n", readme)
         project = self.tmp / "p"
         project.mkdir()
@@ -2549,6 +2549,104 @@ rm -rf build
         self.assertEqual((code, out, err), (gs.EXIT_ERROR, "", "ERROR: [Errno 28] No space left on device\n"))
         self.assertFalse((self.tmp / "s.zip").exists())
 
+
+    # Regressions in REPRODUCER.md, one test each.
+
+    def layout_project(self, text):
+        """A dir with the scenario's layout files, as a reader has it after unzipping."""
+        project = self.tmp / "p"
+        project.mkdir()
+        for rel, content in gs.load_scenario(text).files.items():
+            (project / rel).parent.mkdir(parents=True, exist_ok=True)
+            (project / rel).write_bytes(content.encode())
+        return project
+
+    def test_diff_lines_that_look_like_headers_are_content(self):
+        text = ('[setup.layout.project]\n"a.txt" = "x\\n"\n"b.txt" = "-- one\\t\\nkeep\\n"\n'
+                '[[steps]]\nedit = [{ file = "a.txt", replace = "x\\n", with = "x\\n++ y" }, { file = "b.txt", replace = "-- one\\t\\n", with = "" }]\n')
+        readme = self.readme(text)
+        self.assertIn("\n+++ y\n\\ No newline at end of file\nEOF\n", readme)       # an added "++ y", without a final newline
+        self.assertIn("\n--- one\t\n keep\nEOF\n", readme)                         # a removed "-- one<tab>", tab kept
+        if shutil.which("patch"):
+            project = self.layout_project(text)
+            self.run_snippets(readme, project)
+            self.assertEqual([(project / f).read_bytes() for f in ("a.txt", "b.txt")], [b"x\n++ y", b"keep\n"])
+
+    def test_no_op_edit_of_a_name_with_a_newline_runs_nothing(self):
+        text = '[setup.layout.project]\n"x\\ntouch pwned" = "x\\n"\n[[steps]]\nedit = [{ file = "x\\ntouch pwned", replace = "x", with = "x" }]\n'
+        readme = self.readme(text)
+        self.assertIn("\n# x\\ntouch pwned stays as it is: its text is replaced with the same text\n", readme)
+        self.assertNotIn("\ntouch pwned", readme)
+        if not gs.WINDOWS:                                    # no newline in a file name there
+            project = self.layout_project(text)
+            self.run_snippets(readme, project)
+            self.assertFalse((project / "pwned").exists())
+
+    def test_edit_of_a_file_named_dash(self):
+        text = '[setup.layout.project]\n"-" = "one\\n"\n[[steps]]\nedit = [{ file = "-", replace = "one", with = "two" }]\n'
+        readme = self.readme(text)
+        self.assertNotIn("--- a/-\n", readme)                 # BSD patch reads - as stdout and leaves the file as it is
+        self.assertIn("cat > ./- <<'EOF'\ntwo\nEOF\n", readme)
+        project = self.layout_project(text)
+        self.run_snippets(readme, project)
+        self.assertEqual((project / "-").read_bytes(), b"two\n")
+
+    def test_heredocs_are_safe_from_old_dash(self):
+        contents = {"a.txt": "Eé\n", "b.txt": "EOé x\n", "c.txt": "EOFé\n", "d.txt": "EOxé\nE é\né\n"}
+        readme = self.readme("[[steps]]\n[steps.write]\n" + "\n".join(f"{json.dumps(k)} = {json.dumps(v)}" for k, v in contents.items()) + "\n")
+        heredocs = re.findall(r"<<'(\w+)'(?: &&)?\n(.*?)\n\1$", readme, re.M | re.S)
+        self.assertEqual([d for d, _ in heredocs], ["EOF"])   # d.txt only; the others need printf
+        for delimiter, body in heredocs:                      # dash before 0.5.13 drops a byte after a part of the delimiter
+            for line in body.split("\n"):
+                for k in range(1, len(delimiter) + 1):
+                    self.assertFalse(line.startswith(delimiter[:k]) and len(line) > k and not line[k].isascii(), line)
+        if not gs.WINDOWS:                                    # non-ASCII in bash -c there depends on the code page
+            project = self.tmp / "p"
+            project.mkdir()
+            self.run_snippets(readme, project, shutil.which("dash"))   # dash where there is one, such as an old one on macOS
+            for rel, content in contents.items():
+                self.assertEqual((project / rel).read_bytes(), content.encode(), rel)
+
+    def test_a_fence_in_the_description_is_escaped(self):
+        readme = self.readme('description = """```kotlin\nval x = 1"""\n[[steps]]\nrun.gradle = "help"\n')
+        self.assertIn("\n\\```kotlin\nval x = 1\n", readme)
+        self.assertEqual(len(re.findall(r"^ {0,3}```", readme, re.M)) % 2, 0)
+
+    def test_a_step_that_writes_reproducer_md_is_refused(self):
+        for rel in ("REPRODUCER.md", "REPRODUCER.md/x"):
+            with self.assertRaises(gs.GustError) as cm:
+                self.readme(f'[[steps]]\nwrite."{rel}" = "x\\n"\n')
+            self.assertEqual(str(cm.exception), f"steps[1].write: {rel!r} is where the zip's REPRODUCER.md goes")
+
+    def test_a_file_step_block_stops_at_its_first_failure(self):
+        readme = self.readme('[[steps]]\nwrite = { "a/b.txt" = "b\\n", "c.txt" = "c\\n" }\n')
+        body = re.findall(r"^```sh\n(.*?)\n```$", readme, re.M | re.S)[0]
+        project = self.tmp / "p"
+        project.mkdir()
+        (project / "a").write_text("a file where the dir goes")   # so mkdir -p a fails
+        proc = subprocess.run(gs.shell_argv(body), cwd=project, capture_output=True)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertFalse((project / "c.txt").exists())
+
+    def test_remote_names_get_the_layout_checks(self):
+        craft = self.tmp / "craft"
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+
+        def git(*args, data=None):
+            return subprocess.run(["git", *args], cwd=craft, input=data, check=True, capture_output=True, env=env).stdout.decode().strip()
+        craft.mkdir()
+        git("init", "-q")
+        blob = git("hash-object", "-w", "--stdin", data=b"x\n")
+        inner = git("mktree", data=f"100644 blob {blob}\tx.txt\n".encode())
+        tree = git("mktree", data=f"040000 tree {inner}\t..\n100644 blob {blob}\tok.txt\n".encode())   # git checkout refuses that
+        sha = git("-c", "user.name=t", "-c", "user.email=t@t", "commit-tree", tree, "-m", "one")
+        git("update-ref", "HEAD", sha)
+        scenario = gs.load_scenario(f'setup.layout.remote = "{craft.as_posix()}#{sha}"\n[[steps]]\nrun.gradle = "help"\n')
+        scenario.remote.dir.parent.mkdir(parents=True)
+        shutil.move(str(craft), str(scenario.remote.dir))      # as if fetched
+        with self.assertRaises(gs.GustError) as cm:
+            gs.project_files(scenario)
+        self.assertEqual(str(cm.exception), "setup.layout.remote '../x.txt': path must be relative and must not contain '..'")
 
 class WindowsTest(GustCase):
     """The Windows helpers, run on any OS, some with gs.WINDOWS patched."""
