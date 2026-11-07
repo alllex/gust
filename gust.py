@@ -2637,12 +2637,11 @@ def read_source(args) -> tuple[str, str, dict]:
     if str(args.scenario) == "-":
         if sys.stdin.isatty():
             raise GustError("SCENARIO is '-' but nothing is piped on stdin")
-        text = sys.stdin.read()
         try:
-            text.encode("utf-8")                       # a byte that was not UTF-8 is a lone surrogate here
-        except UnicodeEncodeError:
+            text = sys.stdin.buffer.read().decode("utf-8")   # as a file is read, whatever the locale's encoding
+        except UnicodeDecodeError:
             raise GustError("stdin is not UTF-8 text") from None
-        return text, "stdin", {"base_dir": Path.cwd()}
+        return text.replace("\r\n", "\n").replace("\r", "\n"), "stdin", {"base_dir": Path.cwd()}   # newlines as in text mode
     if not args.scenario.is_file():
         raise GustError(f"scenario file not found: {args.scenario}")
     return (_read_utf8(args.scenario, str(args.scenario)), str(args.scenario),

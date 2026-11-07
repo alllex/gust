@@ -171,7 +171,7 @@ class GustCase(unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         real_stdin = sys.stdin
         if stdin is not None:
-            sys.stdin = stdin if isinstance(stdin, io.StringIO) else io.StringIO(stdin)
+            sys.stdin = stdin if isinstance(stdin, io.TextIOBase) else io.TextIOWrapper(io.BytesIO(stdin.encode()), "utf-8")
         try:
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 code = gs.main(list(argv))
@@ -1770,8 +1770,15 @@ class CliTest(GustCase):
             for command in ("check", "run", "zip", "flat"):
                 with self.subTest(encoding=encoding, command=command):
                     self.assertEqual(self.cli(command, str(path)), (gs.EXIT_ERROR, "", f"ERROR: {path} is not UTF-8 text\n"))
-        code, out, err = self.cli("run", "-", stdin=text.replace("\u00e9", "\udce9"))   # a bad byte, as stdin passes it on
-        self.assertEqual((code, out, err), (gs.EXIT_ERROR, "", "ERROR: stdin is not UTF-8 text\n"))
+
+    def test_stdin_is_read_as_utf8_bytes(self):
+        text = '[[steps]]\nwrite."a.txt" = "caf\u00e9"\n'
+        latin = io.TextIOWrapper(io.BytesIO(text.encode("latin-1")), encoding="utf-8")   # strict, as on a UTF-8 locale
+        self.assertEqual(self.cli("run", "-", stdin=latin), (gs.EXIT_ERROR, "", "ERROR: stdin is not UTF-8 text\n"))
+        cp1252 = io.TextIOWrapper(io.BytesIO(text.encode("utf-8")), encoding="cp1252")   # a Windows code page
+        code, _, err = self.cli("run", "-", "--keep-daemons", stdin=cp1252)
+        self.assertEqual((code, err), (gs.EXIT_OK, ""))
+        self.assertEqual((self.tmp / "scenario.out" / "project" / "a.txt").read_bytes(), "caf\u00e9".encode("utf-8"))
 
     def test_any_scenario_file_name(self):
         s = self.scenario_file(MINIMAL, name="loop.scenario")
