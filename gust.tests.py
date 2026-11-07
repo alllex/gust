@@ -1054,6 +1054,13 @@ class SetupTest(GustCase):
             gs._apply_edit(self.tmp, gs.Edit(file="f.txt", replace=replace, with_="X"))
             self.assertEqual(path.read_bytes(), after, (before, replace))
 
+    def test_edit_of_a_large_file_is_fast(self):
+        started = time.monotonic()
+        with self.assertRaisesRegex(gs.StepError, r"occurs 0 times"):          # a search that tried each position took seconds
+            gs._edited_text("a" * 4_000_000, gs.Edit(file="f.txt", replace="a" * 1000 + "b", with_="X"))
+        self.assertEqual(gs._edited_text("x\r\n" * 1_000_000 + "MARK\r\n", gs.Edit(file="f.txt", replace="MARK", with_="M"))[-3:], "M\r\n")
+        self.assertLess(time.monotonic() - started, 1)
+
     def delete_dir(self, kind, rel, **kw):
         """_delete_dir in <out>/project, laid out empty on the first call; the error message, or what was done."""
         run = self.make_run(gs.load_scenario(MINIMAL), self.out_dir, **kw)

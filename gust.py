@@ -1501,9 +1501,11 @@ def _edited_text(text: str, edit: Edit) -> str:
     a bare \n in the replacement is written as that kind. StepError unless the replaced text occurs exactly once,
     overlapping occurrences counted."""
     lines = re.split(r"\r\n|\r|\n", edit.replace)
-    body = "(?!(?<=\r)\n)" + "(?>\r\n|\r|\n)".join(map(re.escape, lines))    # a line end matches any kind; CRLF is one, never split
-    pattern = re.compile(body)
-    n = len(re.findall(f"(?={body})", text))                     # a lookahead finds the overlapping ones too
+    guard = "" if lines[0] else "(?!(?<=\r)\n)"                  # a match never starts inside a CRLF; only when needed, for speed
+    pattern = re.compile(guard + "(?>\r\n|\r|\n)".join(map(re.escape, lines)))   # a line end matches any kind; CRLF is one
+    n, m = 0, pattern.search(text)
+    while m:                                                     # the overlapping ones too: each start counts
+        n, m = n + 1, pattern.search(text, m.start() + 1)
     if n != 1:
         raise StepError(f"{edit.replace!r} occurs {n} times in {edit.file}; an edit needs exactly one")
     with_ = edit.with_
