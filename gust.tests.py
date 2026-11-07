@@ -355,6 +355,12 @@ run.shell = "true"
         self.assert_rejects('name = "has space"\n[[steps]]\nrun.shell = "x"', "name: must match")
         self.assert_rejects('name = "-lead"\n[[steps]]\nrun.shell = "x"', "name: must match")
 
+    def test_gradle_args_that_cannot_be_split_are_refused(self):
+        for run, where in (("run.gradle = 'help \"x'", "steps[1].run.gradle"),
+                           ("run.gradle = { args = \"help 'x\" }", "steps[1].run.gradle.args")):
+            with self.subTest(run=run):
+                self.assert_rejects(f"[[steps]]\n{run}", f"{where}: cannot split")       # on every system, not only on Windows
+
     def test_name_inferred(self):
         nameless = '[[steps]]\nrun.shell = "x"\n'
         self.assertEqual(gs.load_scenario(nameless).name, "scenario")

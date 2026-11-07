@@ -206,7 +206,8 @@ an error. On any error nothing is removed and the run ends as an error.
 
 steps[].run.gradle                  Gradle with these arguments, run in the project dir
   shorthand     run.gradle = "test"   means { args = "test", expect = "pass" }
-  args          string   required   the arguments
+  args          string   required   the arguments, which must split by sh's rules: an unclosed quote
+                                    is refused when the scenario is loaded, on every system
   expect        string|table optional  see steps[].run.*.expect; default "pass"
 
 steps[].run.shell                   a command run through sh in the project dir, with $GRADLE set
@@ -1057,13 +1058,24 @@ def _load_run(raw: object, where: str, name: str | None) -> RunStep:
     kind, value = next(iter(raw.items()))
     where = f"{where}.{kind}"
     if isinstance(value, str):
-        return RunStep(kind=kind, command=value, name=name)
+        return RunStep(kind=kind, command=_split_check(value, where, kind), name=name)
     if not isinstance(value, dict):
         raise GustError(f"{where}: must be a string or a table")
     _expect_keys(value, where, RUN_KEYS[kind])
-    command = _require(value, "args" if kind == "gradle" else "command", str, where)
+    key = "args" if kind == "gradle" else "command"
+    command = _split_check(_require(value, key, str, where), f"{where}.{key}", kind)
     expect = _load_expect(value.get("expect", "pass"), f"{where}.expect")
     return RunStep(kind=kind, command=command, expect=expect, name=name)
+
+
+def _split_check(command: str, where: str, kind: str) -> str:
+    """The command as it is, once Gradle arguments are known to split by sh's rules, as they are split on Windows."""
+    if kind == "gradle":
+        try:
+            shlex.split(command)
+        except ValueError as e:
+            raise GustError(f"{where}: cannot split {command!r} into arguments: {e}") from None
+    return command
 
 
 def _load_expect(raw: object, where: str) -> Expect:
