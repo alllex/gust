@@ -2546,6 +2546,18 @@ rm -rf build
         self.assertEqual((code, out, err), (gs.EXIT_ERROR, "", "ERROR: [Errno 28] No space left on device\n"))
         self.assertFalse((self.tmp / "s.zip").exists())
 
+    def test_a_failed_git_call_is_one_error_line(self):
+        link = self.remote({"sub/a.txt": ("100644", b"a\n")})
+        fetched = self.scenario_file(f'setup.layout.remote = "{link}/sub"\n[[steps]]\nrun.gradle = "help"\n', "fetched.toml")
+        self.assertEqual(self.cli("zip", str(fetched))[0], gs.EXIT_OK)
+        checkout = gs.load_scenario(fetched.read_text()).remote.dir
+        (checkout / "ghost").mkdir()                       # on disk, so the cached checkout passes, but not in the commit
+        ghost = self.scenario_file(f'setup.layout.remote = "{link}/ghost"\n[[steps]]\nrun.gradle = "help"\n', "ghost.toml")
+        os.environ["GIT_TRACE"] = "1"                      # trace lines on git's stderr, ahead of the one that counts
+        code, out, err = self.cli("zip", str(ghost))
+        self.assertEqual((code, out, err), (gs.EXIT_ERROR, "", f"ERROR: git ls-tree failed in {checkout}: fatal: Not a valid object name HEAD:ghost\n"))
+        self.assertFalse((self.tmp / "ghost.zip").exists())
+
 
 class WindowsTest(GustCase):
     """The Windows helpers, run on any OS, some with gs.WINDOWS patched."""
