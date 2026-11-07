@@ -2309,7 +2309,7 @@ Needs Gradle 9.7.1, as `gradle` on PATH.
 
 ## Steps
 
-Run each block from the directory this file is in, in order. What to expect from a block is in the text above it.
+Run each `sh` block from the directory this file is in, in order. What to expect from a block is in the text above it.
 
 In the shell steps, Gradle is `$GRADLE`, and any extra arguments are in `$GRADLE_ARGS`. Set them first:
 
@@ -2739,6 +2739,28 @@ rm -rf build
                       "Text 1:\n\n```text\nx\n# y\n```\n\n```sh\ngradle help\n```\n", readme)
         self.assertIn("\nThe file `c.txt` is written anew as a whole, instead of with a diff for patch.\n\n"
                       "The file `s.txt` stays as it is: its text is replaced with the same text.\n\n```sh\npatch -p1", readme)
+
+    def test_forbidden_output_texts_are_joined_with_or(self):
+        readme = self.readme('[[steps]]\nrun.gradle = { args = "help", expect = { output = ["a"], no_output = ["b", "c", "d"] } }\n'
+                             '[[steps]]\nrun.gradle = { args = "help", expect = { no_output = ["x", "y"] } }\n')
+        self.assertIn("\nExpected: passes, and the output contains `a`, but not `b`, `c` or `d`.\n", readme)   # any one fails it
+        self.assertIn("\nExpected: passes, and the output does not contain `x` or `y`.\n", readme)
+
+    def test_an_edit_step_of_no_op_edits_has_no_empty_block(self):
+        readme = self.readme('[setup.layout.project]\n"s.txt" = "s\\n"\n[[steps]]\nedit = [{ file = "s.txt", replace = "s", with = "s" }]\n')
+        self.assertTrue(readme.endswith("### 1. Edit: s.txt\n\nThe file `s.txt` stays as it is: its text is replaced with the same text.\n"),
+                        readme)
+        self.assertNotIn("```sh\n```", readme)
+
+    def test_a_shell_command_with_a_comment_gets_a_note(self):
+        readme = self.readme('[[steps]]\nrun.shell = "echo hi # say hi"\n[[steps]]\nrun.shell = "echo \'#1\' a#b $#"\n')
+        note = "The command has a `#` comment; in zsh, run `setopt interactive_comments` first."
+        first, second = readme.split("### 2.")
+        self.assertIn(f"\n{note}\n\n```sh\necho hi # say hi\n```\n", first)
+        self.assertEqual(second, " Run: echo '#1' a#b $#\n\n```sh\necho '#1' a#b $#\n```\n")   # no comment there: no note
+
+    def test_the_intro_names_the_sh_blocks(self):
+        self.assertIn("\nRun each `sh` block from the directory this file is in, in order.", self.readme('[[steps]]\nrun.gradle = "help"\n'))
 
     def test_spec_names_when_dash_forces_printf(self):
         self.assertIn("starts with E, EO, or EOF and then a non-ASCII", " ".join(gs.FORMAT_SPEC.split()))

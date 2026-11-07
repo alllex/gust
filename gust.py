@@ -605,8 +605,11 @@ In the block of a write, edit, delete, or clear, the commands are joined with
 apply. A block holds commands only: an interactive zsh runs a pasted comment
 line as a command. What to expect, and a note on an edit that is written as a
 whole file or changes nothing, are text above the block, with names and output
-texts as inline code. The block of a run step is a plain command,
-since it may be expected to fail. A fence (``` or ~~~) or a < at the start of a
+texts as inline code; a forbidden output text is joined with "or", since any
+one of them fails the check. An edit step whose edits all change nothing has
+the note and no block. A run.shell command keeps its own # comments, with a
+note above to run `setopt interactive_comments` first in zsh. The block of a
+run step is a plain command, since it may be expected to fail. A fence (``` or ~~~) or a < at the start of a
 line of the description, after any list or quote markers, is escaped, so the
 rest of SCENARIO.md stays as it is; a < that starts an autolink, such as
 <https://...>, is left as it is.
@@ -2247,8 +2250,8 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
         out += [_DESCRIPTION_ESCAPE_RE.sub(r"\1\\\2", _visible(scenario.description)), ""]
     out += [f"Needs Gradle{' ' + gradle_version if gradle_version else ''}, as `gradle` on PATH.", "",
             "## Steps", "",
-            "Run each block from the directory this file is in, in order. What to expect from a block is in the text "
-            "above it.",
+            "Run each `sh` block from the directory this file is in, in order. What to expect from a block is in the "
+            "text above it.",
             ""]
     if any(isinstance(s, RunStep) and s.kind == "shell" and _GRADLE_VAR_RE.search(s.command) for s in scenario.steps):
         out += ["In the shell steps, Gradle is `$GRADLE`, and any extra arguments are in `$GRADLE_ARGS`. Set them first:",
@@ -2269,6 +2272,8 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
                     raise GustError(f"steps[{i}].run.shell: the command uses the wrapper ({m[0]!r}), which is left out "
                                     f"of the zip")
             label = label or f"Run: {command}"
+            if step.kind == "shell" and _has_comment(command):
+                notes.append("The command has a `#` comment; in zsh, run `setopt interactive_comments` first.")
             notes += _expected(step.expect)
             body.append(command)
         elif isinstance(step, WriteStep):
@@ -2313,7 +2318,8 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
         if "\n" in heading:
             heading = heading.partition("\n")[0].rstrip() + " ..."
         fence = "`" * max([3] + [len(run) + 1 for run in re.findall(r"`{3,}", "\n".join(body))])
-        out += [f"### {i}. {heading}", "", *(line for note in notes for line in (note, "")), fence + "sh", *body, fence, ""]
+        block = [fence + "sh", *body, fence, ""] if body else []   # an edit step of no-op edits has notes only
+        out += [f"### {i}. {heading}", "", *(line for note in notes for line in (note, "")), *block]
     return "\n".join(out).rstrip("\n") + "\n"
 
 
@@ -2354,7 +2360,8 @@ def _expected(expect: Expect) -> list[str]:
     if expect.output:
         sentence += ", and the output contains " + _and([show(t) for t in expect.output])
     if expect.no_output:
-        sentence += (", but not " if expect.output else ", and the output does not contain ") + _and([show(t) for t in expect.no_output])
+        sentence += ((", but not " if expect.output else ", and the output does not contain ")
+                     + _and([show(t) for t in expect.no_output], "or"))   # any one of them fails the check
     blocks = []
     for k, text in enumerate(texts, start=1):
         fence = "`" * max([3] + [len(run) + 1 for run in re.findall(r"`{3,}", text)])
@@ -2362,8 +2369,19 @@ def _expected(expect: Expect) -> list[str]:
     return [sentence + ".", *blocks]
 
 
-def _and(items: list[str]) -> str:
-    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+def _has_comment(command: str) -> bool:
+    """Whether a shell command has a # comment, which an interactive zsh with default options runs as words: a word
+    that starts with #, outside quotes. A # inside a word or quotes, as in a#b, $#, or '#1', starts none."""
+    words = shlex.shlex(command, posix=False)                 # quotes kept on the words, so a quoted # stays inside
+    words.commenters, words.whitespace_split = "", True
+    try:
+        return any(word.startswith("#") for word in words)
+    except ValueError:                                       # unbalanced quotes: a # may still start a comment
+        return "#" in command
+
+
+def _and(items: list[str], word: str = "and") -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + f" {word} " + items[-1]
 
 
 def _code(text: str) -> str:
