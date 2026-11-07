@@ -374,17 +374,16 @@ Commands
   version                         print gust's version, the Python it runs on, and the script's path
   spec                            print this text
   check SCENARIO [--gradle BIN|VERSION] [--gradle-user-home DIR] [--project DIR] [--json] [--keep-daemons]
-                                  validate the scenario and settle the Gradle binary as run would:
-                                  a scenario with no Gradle step still needs Gradle for the daemon
+                                  validate the scenario and settle the Gradle binary as run would: a
+                                  scenario with no Gradle step still needs Gradle for the daemon
                                   stops, unless --keep-daemons is given, as for run. Nothing is set
-                                  up, installed, or fetched (an uncached remote is
-                                  noted, a cached one checked as run checks it: its HEAD, its
-                                  subdirectory, the file flow). The only thing written is what the
-                                  --version probe leaves in the Gradle user home. Output: the header
-                                  with the description
-                                  under scenario:, then `steps: N (K gradle, L shell, M write,
-                                  P edit, Q delete, R clear)`, or the error. Worth running before
-                                  a long run.
+                                  up, installed, or fetched (an uncached remote is noted, a cached
+                                  one checked as run checks it: its HEAD, its subdirectory, the file
+                                  flow). The only thing written is what the --version probe leaves
+                                  in the Gradle user home. Output: the header with the description
+                                  under scenario:, then `steps: N (K gradle, L shell, M write, P
+                                  edit, Q delete, R clear)`, or the error. Worth running before a
+                                  long run.
                                   With a remote, the header follows `remote:   <link>` and
                                   `checkout: <dir> (cached)`, or, when the remote is not in
                                   .gust/remotes yet, the one line `remote:   <link> (not cached;
