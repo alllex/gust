@@ -1090,7 +1090,7 @@ class LayoutRemoteTest(GustCase):
 
     def test_check_json_has_no_null_keys(self):
         s = self.scenario_file('[[steps]]\nrun.shell = "true"\n', "plain.toml")        # no description, nothing to probe
-        code, out, _ = self.cli("check", str(s), "--json")
+        code, out, _ = self.cli("check", str(s), "--json", "--keep-daemons")
         self.assertEqual(code, gs.EXIT_OK)
         self.assertEqual(json.loads(out.rstrip("\n").splitlines()[-1]),               # empty keys left out, as in run's summary
                          {"scenario": "plain", "gradle": "gradle", "steps": 1,
@@ -1152,7 +1152,7 @@ class LayoutRemoteTest(GustCase):
         code, _, err = self.cli("check", str(bad))
         self.assertEqual(code, gs.EXIT_ERROR)
         self.assertTrue(err.startswith(f"ERROR: {bad}: not valid TOML"), err)
-        code, out, _ = self.cli("check", "-", stdin='[[steps]]\nrun.shell = "true"\n')
+        code, out, _ = self.cli("check", "-", "--keep-daemons", stdin='[[steps]]\nrun.shell = "true"\n')
         self.assertEqual(code, gs.EXIT_OK)
         self.assertTrue(out.startswith(f"scenario: scenario\nhome:     {self.gust / gs.SHARED_HOME}\ngradle:   gradle (default)\n"), out)   # a shell-only scenario: nothing to probe
 
@@ -1580,7 +1580,7 @@ run.shell = 'test -d build && test -z "$(ls -A build)" && test ! -e out'
             {"index": 2, "kind": "clear", "name": "Clear: d", "result": "done", "files": ["d"]},
             {"index": 4, "kind": "clear", "name": "Clear: d", "result": "error", "files": ["d"], "error": "d is a file, not a directory"}])
         self.assertFalse((self.out_dir / "project" / "should-not-exist").exists())
-        code, out, _ = self.cli("check", str(s))
+        code, out, _ = self.cli("check", str(s), "--keep-daemons")
         self.assertEqual(code, gs.EXIT_OK, out)
         self.assertIn("steps: 5 (0 gradle, 2 shell, 0 write, 0 edit, 1 delete, 2 clear)\n", out)
 
@@ -1998,6 +1998,19 @@ class CliTest(GustCase):
         self.assertEqual(code, gs.EXIT_OK, out)
         self.assertIn(f"gradle:   ./tools/{g} 9.7.1 (--gradle)\n", out)
 
+    def test_check_needs_gradle_where_run_does(self):
+        s = self.scenario_file(MINIMAL)                                                 # shell only
+        os.environ["PATH"] = os.pathsep.join([str(self.bin)] + GIT_DIR)                 # no gradle here
+        for command in ("run", "check"):                                                # the daemon stops need it
+            with self.subTest(command=command):
+                code, out, err = self.cli(command, str(s))
+                self.assertEqual((code, out, err.strip()), (gs.EXIT_ERROR, "", "ERROR: 'gradle' is not on PATH"))
+        for command in ("run", "check"):                                                # without them, nothing does
+            with self.subTest(command=command, keep_daemons=True):
+                code, out, _ = self.cli(command, str(s), "--keep-daemons")
+                self.assertEqual(code, gs.EXIT_OK, out)
+                self.assertIn("gradle:   gradle (default)\n", out)
+
     def test_setup_only(self):
         s = self.scenario_file('name = "m"\ndescription = "Set up only."\n[setup.layout.project]\n"x" = "y"\n[[steps]]\nrun.shell = "false"')
         code, out, _ = self.cli("setup", str(s), "--out", str(self.tmp / "m"))
@@ -2350,14 +2363,14 @@ class InPlaceTest(GustCase):
     def test_check_setup_and_stop_daemons(self):
         s = self.scenario_file('setup.project = "my proj"\n[[steps]]\nedit = [{ file = "a.txt", replace = "hello", with = "bye" }]\n')
         out_dir = self.tmp / "s.out"
-        code, out, _ = self.cli("check", str(s), "--json")
+        code, out, _ = self.cli("check", str(s), "--json", "--keep-daemons")
         self.assertEqual(code, gs.EXIT_OK, out)
         self.assertTrue(out.startswith(f"scenario: s\nproject:  {self.proj} (in place)\nhome:     "), out)
         self.assertEqual(json.loads(out.rstrip("\n").splitlines()[-1])["project"], str(self.proj))
         bare = self.scenario_file('[[steps]]\nedit = [{ file = "a.txt", replace = "hello", with = "bye" }]\n', name="t.toml")
         code, _, err = self.cli("check", str(bare))
         self.assertEqual((code, err.strip()), (gs.EXIT_ERROR, f"ERROR: {bare}: steps[1].edit[1].file: 'a.txt' is not in the layout and no earlier step writes it"))
-        self.assertEqual(self.cli("check", str(bare), "--project", "my proj")[0], gs.EXIT_OK)
+        self.assertEqual(self.cli("check", str(bare), "--project", "my proj", "--keep-daemons")[0], gs.EXIT_OK)
         # setup has nothing to lay out, and no --project
         code, out, err = self.cli("setup", str(s))
         self.assertEqual((code, out, err.strip()), (gs.EXIT_ERROR, "", f"ERROR: nothing to lay out: the project {self.proj} is used in place, as it is"))

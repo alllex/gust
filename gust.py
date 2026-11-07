@@ -368,9 +368,11 @@ Commands
   help [COMMAND]                  print usage, or a command's usage
   version                         print gust's version, the Python it runs on, and the script's path
   spec                            print this text
-  check SCENARIO [--gradle BIN|VERSION] [--gradle-user-home DIR] [--project DIR] [--json]
-                                  validate the scenario and settle the Gradle binary as run would,
-                                  with nothing set up, installed, or fetched (an uncached remote is
+  check SCENARIO [--gradle BIN|VERSION] [--gradle-user-home DIR] [--project DIR] [--json] [--keep-daemons]
+                                  validate the scenario and settle the Gradle binary as run would:
+                                  a scenario with no Gradle step still needs Gradle for the daemon
+                                  stops, unless --keep-daemons is given, as for run. Nothing is set
+                                  up, installed, or fetched (an uncached remote is
                                   noted, a cached one checked as run checks it: its HEAD, its
                                   subdirectory, the file flow). The only thing written is what the
                                   --version probe leaves in the Gradle user home. Output: the header
@@ -446,8 +448,9 @@ any binary (stop-daemons). The note is the source, (default),
 (scenario), or (--gradle), plus ", installed by gradle" when the wrapper is
 installed first. In check, "; not checked, remote not cached" is added when the
 remote is not fetched yet. The summary has the version as gradle_version. When
-nothing runs with Gradle (a shell-only scenario without daemon stops), the
-binary is neither checked nor probed and the line has no version.
+nothing runs with Gradle (a shell-only scenario with --keep-daemons, in run and
+check alike), the binary is neither checked nor probed and the line has no
+version.
 
 Console
 =======
@@ -2745,6 +2748,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_check.add_argument("--gradle-user-home", type=Path, metavar="DIR", help=HOME_HELP)
     p_check.add_argument("--project", type=Path, metavar="DIR", help=PROJECT_HELP)
     p_check.add_argument("--json", action="store_true", help="print the summary as JSON on the last line")
+    p_check.add_argument("--keep-daemons", action="store_true",
+                         help="check as for 'run --keep-daemons', where a scenario without Gradle steps needs no Gradle")
     p_stop = sub.add_parser("stop-daemons", help="run '<gradle> --stop' in the set-up project",
                             description="Run '<gradle> --stop' in the set-up project, stopping every daemon of that Gradle "
                                         "and user home. Needs <out>/project from 'setup' or an earlier 'run', or a "
@@ -2895,7 +2900,8 @@ def _cli_check(args) -> int:
         root = remote.source
     _check_shell(scenario)
     counts = scenario.counts()
-    choice = settle_gradle(scenario, args.gradle, root, user_home, needed=counts["gradle"] > 0, may_install=True)
+    needed = not args.keep_daemons or counts["gradle"] > 0                      # as run: the daemon stops need Gradle too
+    choice = settle_gradle(scenario, args.gradle, root, user_home, needed=needed, may_install=True)
     print_remote(scenario, remote_info, sys.stdout)
     print_header(scenario, None, user_home, choice, sys.stdout, description=True)
     print(f"steps: {len(scenario.steps)} ({', '.join(f'{n} {kind}' for kind, n in counts.items())})")

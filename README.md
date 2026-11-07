@@ -179,7 +179,10 @@ left alone.
 
 Daemons of the chosen Gradle are stopped before the first step and after the
 last, so every run starts cold. These are the `[BEF]` and `[AFT]` lines around
-the numbered steps; pass `--keep-daemons` to skip them.
+the numbered steps; pass `--keep-daemons` to skip them. The stops need Gradle
+even when no step runs it, so a scenario with shell steps alone needs no Gradle
+only with `--keep-daemons`. `check` takes `--keep-daemons` too, to judge the
+scenario as that run would.
 
 The working directory also gets `.gust/`, a cache that is safe to delete (set
 `GUST_DIR` to put it elsewhere):
