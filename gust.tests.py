@@ -2309,7 +2309,7 @@ Needs Gradle 9.7.1, as `gradle` on PATH.
 
 ## Steps
 
-Run each block from the directory this file is in, in order. What to expect from a block is in its comments.
+Run each block from the directory this file is in, in order. What to expect from a block is in the text above it.
 
 In the shell steps, Gradle is `$GRADLE`, and any extra arguments are in `$GRADLE_ARGS`. Set them first:
 
@@ -2320,12 +2320,16 @@ GRADLE_ARGS=
 
 ### 1. Run: gradle build --info
 
+Expected: fails, and the output contains `BUILD FAILED` and text 1 below, but not `BUILD SUCCESSFUL`.
+
+Text 1:
+
+```text
+two
+lines
+```
+
 ```sh
-# expected to fail
-# expected in the output: BUILD FAILED
-# expected in the output: two
-#   lines
-# not expected in the output: BUILD SUCCESSFUL
 gradle build --info
 ```
 
@@ -2419,9 +2423,9 @@ rm -rf build
         readme = self.readme(text)
         self.assertIn("patch -p1 <<'EOF' &&\n--- a/open.txt\n+++ b/open.txt\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n"
                       "+c\n\\ No newline at end of file\nEOF\n", readme)
-        self.assertIn("# crlf.txt: the whole file, written anew instead of a diff for patch\n", readme)
+        self.assertIn("\nThe file `crlf.txt` is written anew as a whole, instead of with a diff for patch.\n", readme)
         self.assertIn("\nprintf 'one\\r\ndeux\\r\n' > crlf.txt &&\n", readme)
-        self.assertIn("# same.txt stays as it is: its text is replaced with the same text\n", readme)
+        self.assertIn("\nThe file `same.txt` stays as it is: its text is replaced with the same text.\n", readme)
         self.assertIn("cat > 'my file.txt' <<'EOF'\ny\nEOF\n", readme)
         if shutil.which("patch"):
             project = self.tmp / "p"
@@ -2629,7 +2633,7 @@ rm -rf build
     def test_no_op_edit_of_a_name_with_a_newline_runs_nothing(self):
         text = '[setup.layout.project]\n"x\\ntouch pwned" = "x\\n"\n[[steps]]\nedit = [{ file = "x\\ntouch pwned", replace = "x", with = "x" }]\n'
         readme = self.readme(text)
-        self.assertIn("\n# x\\ntouch pwned stays as it is: its text is replaced with the same text\n", readme)
+        self.assertIn("\nThe file `x\\ntouch pwned` stays as it is: its text is replaced with the same text.\n", readme)
         self.assertNotIn("\ntouch pwned", readme)
         if not gs.WINDOWS:                                    # no newline in a file name there
             project = self.layout_project(text)
@@ -2720,15 +2724,21 @@ rm -rf build
         readme = self.readme('description = """<!-- not a comment\n  <pre>x"""\n[[steps]]\nrun.gradle = "help"\n')
         self.assertIn("\n\\<!-- not a comment\n  \\<pre>x\n", readme)
 
-    def test_a_chain_has_no_comment_inside(self):
+    def test_sh_blocks_hold_commands_only(self):
         text = ('[setup.layout.project]\n"a.txt" = "a\\n"\n"c.txt" = "x\\r\\n"\n"s.txt" = "s\\n"\n'
+                '[[steps]]\nrun.gradle = { args = "help", expect = { exit = "fail", output = ["> Task :help", "has `tick`"], '
+                'no_output = ["x\\n# y"] } }\n'
                 '[[steps]]\nedit = [{ file = "a.txt", replace = "a", with = "b" }, { file = "c.txt", replace = "x", with = "y" },'
                 ' { file = "s.txt", replace = "s", with = "s" }, { file = "a.txt", replace = "b", with = "c" }]\n')
-        body = re.findall(r"^```sh\n(.*?)\n```$", self.readme(text), re.M | re.S)[0].split("\n")
-        self.assertEqual(body[:2], ["# c.txt: the whole file, written anew instead of a diff for patch",
-                                    "# s.txt stays as it is: its text is replaced with the same text"])
-        for previous, line in zip(body, body[1:]):            # in an interactive zsh, a comment there ends the chain
-            self.assertFalse(previous.endswith("&&") and line.startswith("#"), line)
+        readme = self.readme(text)
+        blocks = [body for _, body in re.findall(r"^(`{3,})sh\n(.*?)\n\1$", readme, re.M | re.S)]
+        self.assertEqual(len(blocks), 2)
+        for body in blocks:                                   # an interactive zsh runs a pasted comment as a command
+            self.assertEqual([line for line in body.split("\n") if line.lstrip().startswith("#")], [], body)
+        self.assertIn("\nExpected: fails, and the output contains `> Task :help` and `` has `tick` ``, but not text 1 below.\n\n"
+                      "Text 1:\n\n```text\nx\n# y\n```\n\n```sh\ngradle help\n```\n", readme)
+        self.assertIn("\nThe file `c.txt` is written anew as a whole, instead of with a diff for patch.\n\n"
+                      "The file `s.txt` stays as it is: its text is replaced with the same text.\n\n```sh\npatch -p1", readme)
 
     def test_spec_names_when_dash_forces_printf(self):
         self.assertIn("starts with E, EO, or EOF and then a non-ASCII", " ".join(gs.FORMAT_SPEC.split()))

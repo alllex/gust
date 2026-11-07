@@ -581,9 +581,10 @@ SCENARIO.md has the scenario's name as its title, the description, a
 `Needs Gradle <version>, as gradle on PATH.` line, and then each step under
 a `### N. <step name>` heading with its own sh block:
 
-  run.gradle      `gradle <args>`, after comments for the expectations:
-                  `# expected to fail`, `# expected in the output: ...`,
-                  `# not expected in the output: ...`
+  run.gradle      `gradle <args>`, with the expectations in a sentence above
+                  the block, such as: Expected: fails, and the output contains
+                  `BUILD FAILED`. An output text of more than one line is in a
+                  text block of its own after that sentence
   run.shell       the command, with ./gradlew and ../gradlew read as gradle; when
                   $GRADLE or $GRADLE_ARGS is used, they are set in a block
                   before the steps
@@ -601,8 +602,10 @@ a `### N. <step name>` heading with its own sh block:
 
 In the block of a write, edit, delete, or clear, the commands are joined with
 &&, so the block stops at its first failure, such as a diff that does not
-apply. The block's comments come before the chain, since in an interactive zsh
-a comment inside it would end it. The block of a run step is a plain command,
+apply. A block holds commands only: an interactive zsh runs a pasted comment
+line as a command. What to expect, and a note on an edit that is written as a
+whole file or changes nothing, are text above the block, with names and output
+texts as inline code. The block of a run step is a plain command,
 since it may be expected to fail. A fence (``` or ~~~) or a < at the start of a
 line of the description, after any list or quote markers, is escaped, so the
 rest of SCENARIO.md stays as it is; a < that starts an autolink, such as
@@ -2230,7 +2233,8 @@ def _write_zip(target: Path, top: str, files: dict[str, tuple[int, bytes]]) -> N
 
 def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_version: str | None) -> str:
     """SCENARIO.md, the scenario written out as steps to run by hand: its name, description, and Gradle version, then
-    each step as a shell snippet under a `### N. <name>` heading. Expectations are comments, ./gradlew is gradle,
+    each step as a shell snippet under a `### N. <name>` heading. A block holds commands only: what to expect, and a
+    note on how a file is written, is text above it, since an interactive zsh runs a pasted comment. ./gradlew is gradle,
     writes are heredocs (printf where a heredoc cannot hold the content), edits are diffs for patch -p1, and deletes
     and clears are rm -rf.
 
@@ -2243,7 +2247,8 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
         out += [_DESCRIPTION_ESCAPE_RE.sub(r"\1\\\2", _visible(scenario.description)), ""]
     out += [f"Needs Gradle{' ' + gradle_version if gradle_version else ''}, as `gradle` on PATH.", "",
             "## Steps", "",
-            "Run each block from the directory this file is in, in order. What to expect from a block is in its comments.",
+            "Run each block from the directory this file is in, in order. What to expect from a block is in the text "
+            "above it.",
             ""]
     if any(isinstance(s, RunStep) and s.kind == "shell" and _GRADLE_VAR_RE.search(s.command) for s in scenario.steps):
         out += ["In the shell steps, Gradle is `$GRADLE`, and any extra arguments are in `$GRADLE_ARGS`. Set them first:",
@@ -2252,6 +2257,7 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
     dirs = {"/".join(rel.split("/")[:k]) for rel in files for k in range(1, rel.count("/") + 1)}
     for i, step in enumerate(scenario.steps, start=1):
         body: list[str] = []
+        notes: list[str] = []                                # Markdown paragraphs above the block
         commands: list[Command] = []                         # a file step's commands, joined with && below
         label = step.name
         if isinstance(step, RunStep):
@@ -2263,7 +2269,8 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
                     raise GustError(f"steps[{i}].run.shell: the command uses the wrapper ({m[0]!r}), which is left out "
                                     f"of the zip")
             label = label or f"Run: {command}"
-            body += _expect_comments(step.expect) + [command]
+            notes += _expected(step.expect)
+            body.append(command)
         elif isinstance(step, WriteStep):
             for rel, content in step.files.items():
                 rel = Path(rel).as_posix()
@@ -2289,7 +2296,9 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
                     raise GustError(f"{where}.file: {edit.file!r} is not UTF-8 text") from None
                 except StepError as e:
                     raise GustError(f"{where}.replace: {e}") from None
-                commands += _sh_edit(rel, before, after)
+                note, edit_commands = _sh_edit(rel, before, after)
+                notes += note
+                commands += edit_commands
                 files[rel] = after.encode("utf-8")
         else:
             if _is_scenario_md(step.dir):
@@ -2304,22 +2313,19 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
         if "\n" in heading:
             heading = heading.partition("\n")[0].rstrip() + " ..."
         fence = "`" * max([3] + [len(run) + 1 for run in re.findall(r"`{3,}", "\n".join(body))])
-        out += [f"### {i}. {heading}", "", fence + "sh", *body, fence, ""]
+        out += [f"### {i}. {heading}", "", *(line for note in notes for line in (note, "")), fence + "sh", *body, fence, ""]
     return "\n".join(out).rstrip("\n") + "\n"
 
 
-Command = tuple[list[str], int | None]   # shell lines, and the one that takes the && after the command; None: a comment
+Command = tuple[list[str], int]   # shell lines, and the one that takes the && after the command
 
 
 def _chained(commands: list[Command]) -> list[str]:
-    """The lines of the commands, joined with &&, so that the block stops at the first failure. The comments come
-    first: one inside the chain ends it in an interactive zsh, where a comment is a command."""
-    comments = [line for command, at in commands if at is None for line in command]
-    commands = [c for c in commands if c[1] is not None]
+    """The lines of the commands, joined with &&, so that the block stops at the first failure."""
     lines = []
     for k, (command, at) in enumerate(commands):
         lines += [line + " &&" if k < len(commands) - 1 and n == at else line for n, line in enumerate(command)]
-    return comments + lines
+    return lines
 
 
 def _visible(text: str) -> str:
@@ -2332,14 +2338,40 @@ def _sh_path(rel: str) -> str:
     return shlex.quote("./" + rel if rel.startswith("-") else rel)
 
 
-def _expect_comments(expect: Expect) -> list[str]:
-    """What a run step must do, as shell comments; nothing for a plain pass."""
-    lines = ["# expected to fail"] if expect.exit == "fail" else []
-    for what, texts in (("expected in the output", expect.output), ("not expected in the output", expect.no_output)):
-        for text in texts:
-            first, *rest = _visible(text).split("\n")
-            lines += [f"# {what}: {first}", *(f"#   {line}" for line in rest)]
-    return lines
+def _expected(expect: Expect) -> list[str]:
+    """What a run step must do, as Markdown paragraphs: one sentence, then a block for each output text of more than one
+    line, which inline code cannot hold. Nothing for a plain pass."""
+    if expect == Expect():
+        return []
+    texts: list[str] = []                                    # the texts of more than one line, numbered in the sentence
+
+    def show(text: str) -> str:
+        if "\n" not in text:
+            return _code(_visible(text))
+        texts.append(_visible(text))
+        return f"text {len(texts)} below"
+    sentence = f"Expected: {'fails' if expect.exit == 'fail' else 'passes'}"
+    if expect.output:
+        sentence += ", and the output contains " + _and([show(t) for t in expect.output])
+    if expect.no_output:
+        sentence += (", but not " if expect.output else ", and the output does not contain ") + _and([show(t) for t in expect.no_output])
+    blocks = []
+    for k, text in enumerate(texts, start=1):
+        fence = "`" * max([3] + [len(run) + 1 for run in re.findall(r"`{3,}", text)])
+        blocks.append(f"Text {k}:\n\n{fence}text\n{text}\n{fence}")
+    return [sentence + ".", *blocks]
+
+
+def _and(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _code(text: str) -> str:
+    """text as Markdown inline code: in a run of backticks longer than any in it, with a space inside each end where
+    the text starts or ends with a backtick, or with spaces on both ends, which would be taken off."""
+    ticks = "`" * max([1] + [len(run) + 1 for run in re.findall(r"`+", text)])
+    pad = " " if text[:1] == "`" or text[-1:] == "`" or (text[:1] == " " and text[-1:] == " " and text.strip()) else ""
+    return f"{ticks}{pad}{text}{pad}{ticks}"
 
 
 def _sh_write(rel: str, content: str) -> Command:
@@ -2371,22 +2403,22 @@ def _safe_delimiter(delimiter: str, lines: list[str]) -> bool:
         for line in lines for k in range(1, len(delimiter) + 1))
 
 
-def _sh_edit(rel: str, before: str, after: str) -> list[Command]:
-    """Shell commands for turning before into after at rel: a unified diff for patch -p1, or the whole file written
-    anew where a diff will not do: a control character such as a carriage return, whitespace in the path, or a file
-    named -, which BSD patch reads as stdout."""
-    name = _visible(rel).replace("\n", "\\n")                 # on one line, so no part of the name runs
+def _sh_edit(rel: str, before: str, after: str) -> tuple[list[str], list[Command]]:
+    """A note for the text above the block, if any, and the shell commands for turning before into after at rel: a
+    unified diff for patch -p1, or the whole file written anew where a diff will not do: a control character such as a
+    carriage return, whitespace in the path, or a file named -, which BSD patch reads as stdout."""
+    name = _code(_visible(rel).replace("\n", "\\n"))          # on one line
     if before == after:
-        return [([f"# {name} stays as it is: its text is replaced with the same text"], None)]
+        return [f"The file {name} stays as it is: its text is replaced with the same text."], []
     if _CONTROL_RE.search(before + after) or re.search(r"\s", rel) or rel == "-":
-        return [([f"# {name}: the whole file, written anew instead of a diff for patch"], None), _sh_write(rel, after)]
+        return [f"The file {name} is written anew as a whole, instead of with a diff for patch."], [_sh_write(rel, after)]
     diff = []
     lines = [re.findall(r"[^\n]*\n|[^\n]+", text) for text in (before, after)]   # split at LF only, as patch does
     for k, line in enumerate(difflib.unified_diff(*lines, f"a/{rel}", f"b/{rel}")):
         if k < 2:                                             # the --- and +++ headers; any later line is content
             line = line.rstrip("\t\n") + "\n"
         diff.append(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n")
-    return [(["patch -p1 <<'EOF'", *"".join(diff).rstrip("\n").split("\n"), "EOF"], 0)]
+    return [], [(["patch -p1 <<'EOF'", *"".join(diff).rstrip("\n").split("\n"), "EOF"], 0)]
 
 
 # --------------------------------------------------------------------------- cli
