@@ -2552,8 +2552,9 @@ class FlatTest(GustCase):
     def test_base_only(self):
         code, out, err = self.flat('setup.layout.base = "layouts/java.toml"\n[[steps]]\nrun.shell = "true"\n')
         self.assertEqual((code, err), (gs.EXIT_PASS, ""))
-        self.assertEqual(out, '[setup.layout.project]\n"settings.gradle.kts" = "base settings"\n"src/A.java" = "base A"\n'
-                              '"src/B.java" = "base B"\n\n[[steps]]\nrun.shell = "true"\n')
+        self.assertEqual(out, '[setup.layout.project]\n# language=kotlin\n"settings.gradle.kts" = "base settings"\n'
+                              '# language=java\n"src/A.java" = "base A"\n# language=java\n"src/B.java" = "base B"\n\n'
+                              '[[steps]]\nrun.shell = "true"\n')
 
     def test_inline_files_win_over_base(self):
         code, out, _ = self.flat("""
@@ -2569,8 +2570,9 @@ run.shell = "true"
 """)
         self.assertEqual(code, gs.EXIT_PASS)
         self.assertEqual(out, 'name = "x"\n\n[setup]\ngradle = "9.7.1"\n\n[setup.layout.project]\n'
-                              '"settings.gradle.kts" = "base settings"\n"src/A.java" = "base A"\n"src/B.java" = "own B"\n'
-                              '"src/C.java" = "own C"\n\n[[steps]]\nrun.shell = "true"\n')
+                              '# language=kotlin\n"settings.gradle.kts" = "base settings"\n# language=java\n"src/A.java" = "base A"\n'
+                              '# language=java\n"src/B.java" = "own B"\n# language=java\n"src/C.java" = "own C"\n\n'
+                              '[[steps]]\nrun.shell = "true"\n')
         source = gs.load_scenario((self.tmp / "s.toml").read_text(), base_dir=self.tmp)
         self.assertEqual(gs.load_scenario(out), source)
         self.assertEqual(list(gs.load_scenario(out).files), list(source.files))           # laid out in the same order as well
@@ -2632,6 +2634,25 @@ run.shell = "true"
         self.assertEqual(err, f"ERROR: stdin: setup.layout.base: no such file {self.tmp / 'nope.toml'}\n")
         code, out, err = self.cli("flat", "-", "--", "x", stdin="")
         self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
+
+    def test_language_comments_above_files(self):
+        text = ('[[steps]]\nrun.shell = "true"\n[[steps]]\n[steps.write]\n"run.sh" = "echo"\n"x/y.YML" = "a: b"\n"notes.txt" = "n"\n'
+                '[setup.layout.project]\n"build.gradle.kts" = "k"\n# language=java\n"A.kt" = "k"\n"B.java" = "j"\n"build.gradle" = "g"\n'
+                '"x.groovy" = "g"\n"a.xml" = "x"\n"gradle.properties" = "p"\n"a.json" = "{}"\n"a.yaml" = "y"\n"README" = "r"\n'
+                '"gradle/libs.versions.toml" = "v"\n"a.kts.txt" = "t"\n"dir.kt/a" = "d"\n')
+        out = gs.flatten(text, "t")
+        self.assertEqual(out, '[[steps]]\nrun.shell = "true"\n\n[[steps]]\n[steps.write]\n# language="Shell Script"\n"run.sh" = "echo"\n'
+                              '# language=yaml\n"x/y.YML" = "a: b"\n"notes.txt" = "n"\n\n[setup.layout.project]\n'
+                              '# language=kotlin\n"build.gradle.kts" = "k"\n# language=kotlin\n"A.kt" = "k"\n'
+                              '# language=java\n"B.java" = "j"\n# language=groovy\n"build.gradle" = "g"\n'
+                              '# language=groovy\n"x.groovy" = "g"\n# language=xml\n"a.xml" = "x"\n'
+                              '# language=properties\n"gradle.properties" = "p"\n# language=json\n"a.json" = "{}"\n'
+                              '# language=yaml\n"a.yaml" = "y"\nREADME = "r"\n'
+                              '# language=TOML\n"gradle/libs.versions.toml" = "v"\n"a.kts.txt" = "t"\n'
+                              '"dir.kt/a" = "d"\n')                                                       # by the key alone
+        self.assertEqual(gs.flatten(text, "t"), out)                                       # the same on every run
+        self.assertEqual(gs.flatten(out, "t"), out)                                        # and from its own output
+        self.assertEqual(gs.to_toml({"a.kts": "v"}), '"a.kts" = "v"\n')                   # outside a table of files, no comment
 
     def test_values_outside_the_format_refused(self):
         for value in (1.5, __import__("datetime").date(2026, 9, 23)):
