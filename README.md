@@ -59,6 +59,29 @@ Then run it:
 gust run loop.toml
 ```
 
+Each step's line says whether its checks came out as expected, and then how its
+command came out; the last line says how the scenario came out:
+
+```
+name:     loop
+out:      /work/loop.out
+home:     /work/.gust/shared-gradle-user-home
+gradle:   gradle 9.2.0 (default)
+[BEF] Stop Gradle daemons -> stop-daemons-before.log
+[1/3] the test fails on a wrong expectation
+$ gradle test
+EXPECTED: FAIL (exit=1) in 4.2s -> step-01.log
+[2/3] fix the expectation
+1 file edited
+[3/3] the test passes
+$ gradle test
+EXPECTED: PASS (exit=0) in 1.9s -> step-03.log
+[AFT] Stop Gradle daemons -> stop-daemons-after.log
+
+out:      /work/loop.out
+scenario: PASS, 3/3 steps
+```
+
 Other commands:
 
 ```
@@ -169,17 +192,20 @@ It holds:
 - with `run --trace`, Gradle's build operation trace for each Gradle step, as
   `step-NN-ops-log.txt`
 - the daemon-stop logs
-- `summary.json`, also on stdout with `--json`: the run's `result` (`success`,
-  `failure`, or `error`), and each step's, with every check of a run step as
-  `expected` or `unexpected`
+- `summary.json`, also on stdout with `--json`: the run's `result` (`pass`,
+  `fail`, or `error`), and each step's, with a run step's `outcome` (`pass` or
+  `fail`) and every check as `expected` or `unexpected`; `gust spec` has its
+  schema
 
-The out dir is named in the console header and again on the last line. On a
+The out dir is named in the console header and again in the footer. On a
 rerun it is removed and recreated, but a directory without gust's marker is
 left alone.
 
 Daemons of the chosen Gradle are stopped before the first step and after the
 last, so every run starts cold. These are the `[BEF]` and `[AFT]` lines around
-the numbered steps; pass `--keep-daemons` to skip them. The stops need Gradle
+the numbered steps; pass `--keep-daemons` to skip them. A failed `[BEF]` stop
+ends the run as an error before any step; a failed `[AFT]` stop is a `WARNING`
+and leaves the outcome as it is. The stops need Gradle
 even when no step runs it, so a scenario with shell steps alone needs no Gradle
 only with `--keep-daemons`. `check` takes `--keep-daemons` too, to judge the
 scenario as that run would.
@@ -233,9 +259,15 @@ still uses the wrapper, such as `test -x gradlew`, is refused.
 
 | Code | Meaning |
 | --- | --- |
-| `0` | success: every check came out as expected |
-| `1` | failure: a check came out unexpected |
-| `2` | error: gust could not do something: bad input (a failed precondition, a malformed scenario, bad arguments), a step that could not be carried out, or a failed wrapper install |
+| `0` | pass: every check came out as expected |
+| `1` | fail: a check came out unexpected |
+| `2` | error: gust could not do something: bad input (a failed precondition, a malformed scenario, bad arguments), a step that could not be carried out, a failed wrapper install, or a failed daemon stop before the steps |
+
+The footer's last line has the same word: `scenario: PASS, 3/3 steps`,
+`scenario: FAIL at step 2/3`, `scenario: ERROR at step 2/3`, or, for a block
+that is not a step, `scenario: ERROR at [WRP]` (the wrapper install for a Gradle
+version), `[BEF]` (the daemon stop before the steps), or `[STOP]` (the
+`stop-daemons` command). With `--json`, the JSON line follows it.
 
 The preconditions (Python version, a scenario in UTF-8 and of the right shape,
 Gradle binary, git) are all checked before the out dir is touched.
@@ -243,9 +275,11 @@ Gradle binary, git) are all checked before the out dir is touched.
 the header was printed: past that point, anything gust cannot do ends the run
 as an error.
 
-On a terminal, the console's verdict words are colored in the terminal's own
-palette: `EXPECTED` green, `UNEXPECTED` bold red, `ERROR` red (on stderr too),
-`SUCCESS` bold, `FAILURE` yellow. Set [`NO_COLOR`](https://no-color.org) for a plain console,
+On a terminal, the console's words are colored in the terminal's own palette.
+On a step line, `EXPECTED` is green and `UNEXPECTED` bold red; a `FAIL` there is
+yellow, as a failed command may well be the expected one, and a `PASS` plain. In
+the footer, `PASS` is green, `FAIL` and `ERROR` red. `ERROR` is red everywhere
+(on stderr too), `WARNING` yellow, and the `$` command lines bold. Set [`NO_COLOR`](https://no-color.org) for a plain console,
 or `FORCE_COLOR` for color through a pipe; the steps get `FORCE_COLOR` in
 their environment too. Logs and `summary.json` stay plain.
 
