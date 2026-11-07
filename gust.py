@@ -477,9 +477,9 @@ blocks, each a label line and what came of it, and then the footer:
                                          On failure: `ERROR: exit=N ...` and the log's tail, and the
                                          run ends there, as an error
   [BEF] Stop Gradle daemons -> stop-daemons-before.log
-                                         one line; on failure `ERROR: exit=N in 0.2s -> ...`, and the
-                                         run ends there, as an error, since the steps would not start
-                                         cold
+                                         one line; on failure `ERROR: exit=N in 0.2s -> ...` and the
+                                         log's tail, and the run ends there, as an error, since the
+                                         steps would not start cold
   [i/N] <step name>                      a run step: `$ <command>`, the output with --show-output,
                                          the step line and its check lines (see below), then, after
                                          an unexpected check, the log's last lines (--tail N, default
@@ -576,8 +576,8 @@ step-NN-ops-tree.json and step-NN-ops-tree.txt appear next to it too. Once the
 file exists, its name follows the log's on the step line (`-> step-01.log,
 step-01-ops-log.txt`) and is the step's trace in the summary. Shell steps are
 not traced; put the property in the step's command to trace one.
---tail N is how many log lines are shown after an unexpected check or a failed
-wrapper install (default 30).
+--tail N is how many log lines are shown after an unexpected check, a failed
+wrapper install, or a failed [BEF] daemon stop (default 30).
 With --show-output, each run step's output appears on the console as it runs,
 untouched, between the `$` line and the step line, inside the rule lines.
 step-NN.log is written either way, and no tail follows an unexpected check.
@@ -2124,6 +2124,8 @@ def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
             before = _stop_daemons(run, BEFORE_LABEL, "stop-daemons-before.log", full=False)
             summary.stop_daemons = {"before": before}
             if before.get("exit_code") != 0:                            # the steps would not start cold
+                if "log" in before:                                      # it ran: its tail, as after a failed install
+                    _print_tail(run.out_dir / before["log"], run.tail, run.out)
                 summary.result = "error"
                 summary.error = before.get("error") or f"daemon stop failed: exit={before['exit_code']} -> {before['log']}"
                 return
@@ -2929,7 +2931,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--project", type=Path, metavar="DIR", help=PROJECT_HELP)
     p_run.add_argument("--json", action="store_true", help="print the run summary as JSON on the last line, after the footer")
     p_run.add_argument("--tail", type=_tail_arg, default=30, metavar="N",
-                       help="how many log lines to show after an unexpected check or a failed wrapper install (default: 30)")
+                       help="how many log lines to show after an unexpected check, a failed wrapper install, or a failed "
+                            "[BEF] daemon stop (default: 30)")
     p_run.add_argument("--show-output", action="store_true", help=RUN_SHOW_OUTPUT_HELP)
     p_run.add_argument("--keep-daemons", action="store_true", help="do not stop Gradle daemons before or after the steps")
     p_run.add_argument("--trace", action="store_true",

@@ -1848,13 +1848,15 @@ with = "b"
         os.environ["STOP_FAILS"] = "1"
         summary = self.run_scenario(gs.load_scenario('name = "f"\n[[steps]]\nrun.shell = "touch ran"'), self.out_dir, gradle=str(flaky),
                                     stop_daemons=True)
-        self.assertEqual((summary.result, summary.error, summary.steps), ("error", 
+        self.assertEqual((summary.result, summary.error, summary.steps), ("error",
                           "daemon stop failed: exit=3 -> stop-daemons-before.log", []))
         self.assertEqual(list(summary.stop_daemons), ["before"])                        # no step ran, so no stop after them
         self.assertEqual(summary.stop_daemons["before"]["exit_code"], 3)
         self.assertFalse((self.project / "ran").exists())
+        tail = f"{rule('last 1 of 1 lines of stop-daemons-before.log')}\ncannot stop\n{CLOSING}\n"         # as after a failed install
         self.assertRegex(self.out.getvalue(), r"\n\[BEF\] Stop Gradle daemons -> stop-daemons-before\.log\nERROR: exit=3 in \d+\.\ds -> "
-                                              r"stop-daemons-before\.log\n\nout:      .*\nscenario: ERROR at \[BEF\]\n$")
+                                              r"stop-daemons-before\.log\n"
+                                              + re.escape(f"{tail}\nout:      {self.out_dir}\nscenario: ERROR at [BEF]\n") + "$")
         self.assertEqual(json.loads((self.out_dir / "summary.json").read_text())["stop_daemons"], summary.stop_daemons)
         # one that cannot start: its message is the error, under before and at the top
         self.out = io.StringIO()
