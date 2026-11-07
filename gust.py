@@ -227,9 +227,10 @@ steps[].edit[]
   file          string   required   a file from the project table, the remote checkout, the
                                     project dir in place, or an earlier write step
   replace       string   required   non-empty; must occur exactly once in the file when the step runs,
-                                    where a line end matches CRLF, LF and CR alike
+                                    overlapping occurrences counted, where a line end matches CRLF,
+                                    LF and CR alike
   with          string   required   the replacement text, written as it is, except that in a file
-                                    with only CRLF or only LF line ends, each \\n not after a \\r
+                                    with only CRLF, only LF or only CR line ends, each \\n not after a \\r
                                     is written as the file's line end
 
 Each check of a run step comes out as expected or unexpected. The run stops at
@@ -1498,10 +1499,14 @@ def _apply_edit(project: Path, edit: Edit) -> None:
 
 def _edited_text(text: str, edit: Edit) -> str:
     """The text with the edit applied: a line end in the replaced text matches any kind, and in a file with one kind,
-    a bare \n in the replacement is written as that kind. StepError unless the replaced text occurs exactly once."""
+    a bare \n in the replacement is written as that kind. StepError unless the replaced text occurs exactly once,
+    overlapping occurrences counted."""
     lines = re.split(r"\r\n|\r|\n", edit.replace)
-    pattern = re.compile("(?>\r\n|\r|\n)".join(map(re.escape, lines)))     # a line end matches any kind; atomic: CRLF is one
-    n = len(pattern.findall(text))
+    guard = "" if lines[0] else "(?!(?<=\r)\n)"                  # a match never starts inside a CRLF; only when needed, for speed
+    pattern = re.compile(guard + "(?>\r\n|\r|\n)".join(map(re.escape, lines)))   # a line end matches any kind; CRLF is one
+    n, m = 0, pattern.search(text)
+    while m:                                                     # the overlapping ones too: each start counts
+        n, m = n + 1, pattern.search(text, m.start() + 1)
     if n != 1:
         raise StepError(f"{edit.replace!r} occurs {n} times in {edit.file}; an edit needs exactly one")
     with_ = edit.with_
@@ -1511,10 +1516,10 @@ def _edited_text(text: str, edit: Edit) -> str:
 
 
 def _line_end(text: str) -> str | None:
-    """The line end of a file with one kind, "\\r\\n" or "\\n"; None for a file with both kinds, or none."""
+    """The line end of a file with one kind, "\\r\\n", "\\n" or "\\r"; None for a file with more kinds, or none."""
     crlf = text.count("\r\n")
-    lf = text.count("\n") - crlf
-    return "\r\n" if crlf and not lf else "\n" if lf and not crlf else None
+    kinds = [eol for eol, n in (("\r\n", crlf), ("\n", text.count("\n") - crlf), ("\r", text.count("\r") - crlf)) if n]
+    return kinds[0] if len(kinds) == 1 else None
 
 
 def _delete_dir(run: Run, step: DeleteStep) -> str:

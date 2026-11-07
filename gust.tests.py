@@ -1010,7 +1010,11 @@ class SetupTest(GustCase):
             (b"a\nb", "a\nb", "c", b"c"),                                             # no final line end
             (b"abc", "b", "1\n2", b"a1\n2c"),                                         # no line end at all: as written
             (b"abc", "b", "1\r\n2", b"a1\r\n2c"),
+            (b"\r  \r", "  ", "\n", b"\r\r\r"),                                       # CR: a bare \n in with stands for CR
+            (b"a\rb\rc", "a\nb", "x\ny\r\nz", b"x\ry\r\nz\rc"),                       # CR: \r\n in with is written as it is
             (b"a\nb\r\nc\n", "b\nc", "B\nC", b"a\nB\nC\n"),                           # both kinds: with as written
+            (b"a\rb\nc", "c", "x\ny", b"a\rb\nx\ny"),                                   # CR and LF: with as written
+            (b"a\rb\r\nc", "b\nc", "x\ny", b"a\rx\ny"),                                 # CR and CRLF: with as written
             (b"a\r\nb\nc\n", "a\r\nb", "x\r\ny", b"x\r\ny\nc\n"),
         ]:
             path.write_bytes(before)
@@ -1027,6 +1031,38 @@ class SetupTest(GustCase):
         with self.assertRaisesRegex(gs.StepError, r"^f.txt is not UTF-8 text; nothing to edit$"):
             gs._apply_edit(self.tmp, gs.Edit(file="f.txt", replace="a", with_="x"))
         self.assertEqual(path.read_bytes(), b"a\xff\r\n")
+
+    def test_edit_counts_overlapping_occurrences(self):
+        path = self.tmp / "f.txt"
+        for before, replace, n in [
+            (b"1.0.0.0", "0.0", 2),
+            (b"}\n}\n}\n", "}\n}", 2),
+            (b"}\r\n}\r\n}\r\n", "}\n}", 2),                                         # with a line end of any kind
+            (b"}\r}\r}\r", "}\n}", 2),
+            (b"aaa", "aa", 2),
+            ("\u00e9.\u00e9.\u00e9".encode(), "\u00e9.\u00e9", 2),                       # multi-byte UTF-8
+            (b"a\rb\r\na\rb", "a\nb", 2),                                              # CR and CRLF in one file
+        ]:
+            path.write_bytes(before)
+            with self.assertRaises(gs.StepError) as cm:
+                gs._apply_edit(self.tmp, gs.Edit(file="f.txt", replace=replace, with_="X"))
+            self.assertEqual(str(cm.exception), f"{replace!r} occurs {n} times in f.txt; an edit needs exactly one")
+            self.assertEqual(path.read_bytes(), before)
+        for before, replace, after in [
+            (b"1.0.0", "0.0", b"1.X"),
+            (b"a\r\nb\r\n", "\nb", b"aX\r\n"),                                          # a CRLF is one line end: no second start at its LF
+            (b"a\r\n\r\nb", "\n\n", b"aXb"),
+        ]:
+            path.write_bytes(before)
+            gs._apply_edit(self.tmp, gs.Edit(file="f.txt", replace=replace, with_="X"))
+            self.assertEqual(path.read_bytes(), after, (before, replace))
+
+    def test_edit_of_a_large_file_is_fast(self):
+        started = time.monotonic()
+        with self.assertRaisesRegex(gs.StepError, r"occurs 0 times"):          # a search that tried each position took seconds
+            gs._edited_text("a" * 4_000_000, gs.Edit(file="f.txt", replace="a" * 1000 + "b", with_="X"))
+        self.assertEqual(gs._edited_text("x\r\n" * 1_000_000 + "MARK\r\n", gs.Edit(file="f.txt", replace="MARK", with_="M"))[-3:], "M\r\n")
+        self.assertLess(time.monotonic() - started, 1)
 
     def delete_dir(self, kind, rel, **kw):
         """_delete_dir in <out>/project, laid out empty on the first call; the error message, or what was done."""
