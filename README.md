@@ -180,9 +180,8 @@ get them as `$GRADLE_ARGS`.
 **IntelliJ IDEA.** With a `# language=kotlin` comment on the line above a
 file, its content is highlighted as Kotlin. Such a comment is for IntelliJ only.
 You write it by hand, and like other comments past the top of the file, it is
-lost in `gust flat` output. Each comment sits between the file names, so a
-scenario with many files gets harder to scan; add them where the highlighting
-helps more than it costs.
+lost in `gust flat` output. With many files, the file names are harder to pick
+out between such comments, so add them only where the highlighting is worth it.
 
 **Neovim** 0.10 or newer, with tree-sitter highlighting on for TOML. Save this
 as `~/.config/nvim/after/queries/toml/injections.scm`, so that each `'''` string
