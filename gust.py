@@ -88,7 +88,7 @@ EXPECT_KEYS = {"exit", "output", "no_output"}
 EXPECT_VALUES = ("pass", "fail")
 
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-VERSION_RE = re.compile(r"\d+\.\d+(\.\d+)?([-+][A-Za-z0-9.+-]+)?")   # 9.7.1, 9.8.0-rc-2, 9.9.0-20260916091910+0000
+VERSION_RE = re.compile(r"\d+\.\d+(\.\d+)?([-+][A-Za-z0-9.+-]+)?")   # 9.9.0, 9.8.0-rc-2, 9.9.0-20260916091910+0000
 SHA_RE = re.compile(r"[0-9a-f]{7,40}")
 
 EXAMPLE = """\
@@ -147,7 +147,7 @@ setup                               what `gust setup` produces, and the first pa
   gradle        string   optional   the Gradle the steps run with, unless --gradle is given:
                                     "wrapper" for the project's own ./gradlew, which must be in the
                                     remote checkout or the project dir in place (the project table
-                                    cannot hold its jar); or a version such as "9.7.1", whose
+                                    cannot hold its jar); or a version such as "9.9.0", whose
                                     wrapper is installed into the project first (see Gradle
                                     version; the layout needs a settings file). Default: the
                                     project's own ./gradlew when the checkout, the project dir in
@@ -401,7 +401,7 @@ With --project DIR, an existing project dir is used in place (see In place).
      is expanded).
   2. A value without a "/" that names an executable on PATH or in the working
      directory (gradle, grl) is a binary.
-  3. Anything else must be a Gradle version (9.7.1, 9.8.0-rc-2). Its wrapper
+  3. Anything else must be a Gradle version (9.9.0, 9.8.0-rc-2). Its wrapper
      is installed first, with gradle from PATH (see Gradle version), which
      needs a settings file in the layout. Nothing is installed by
      stop-daemons, so there --gradle takes a binary only (BIN). Nor is
@@ -436,7 +436,7 @@ Once the preconditions pass, a header is printed: scenario:, out:, project:
 come first, while the checkout is fetched or found in the cache. Then come
 blocks, each a label line and a result line:
 
-  [WRP] Install Gradle wrapper 9.7.1     a `$ <command>` line, the wrapper task's output with
+  [WRP] Install Gradle wrapper 9.9.0     a `$ <command>` line, the wrapper task's output with
                                          --show-output, then `exit=0 in 3.1s -> install-wrapper.log`.
                                          On failure: `ERROR: exit=N ...`, the log's tail, and
                                          result: ERROR (exit 2)
@@ -553,11 +553,11 @@ Gradle version
 ==============
 
 A local Gradle installation is assumed. When a version is in play
-(setup.gradle = "9.7.1", or --gradle 9.7.1), a wrapper for it is installed into
+(setup.gradle = "9.9.0", or --gradle 9.9.0), a wrapper for it is installed into
 the project right after setup and before anything else runs, with Gradle's own
 wrapper task and gradle from PATH:
 
-  gradle wrapper --gradle-version 9.7.1 --no-daemon
+  gradle wrapper --gradle-version 9.9.0 --no-daemon
 
 The steps and both daemon stops then use ./gradlew. The output is in
 <out>/install-wrapper.log. The wrapper task only works inside a Gradle build,
@@ -847,7 +847,7 @@ class Scenario:
     files: dict[str, str]               # path -> content: the layout file's, then the scenario's own
     steps: list[Step]
     remote: Remote | None = None
-    gradle: str | None = None           # "wrapper" (the project's own ./gradlew), a version such as "9.7.1", or None
+    gradle: str | None = None           # "wrapper" (the project's own ./gradlew), a version such as "9.9.0", or None
     project: Path | None = None         # setup.project or --project, absolute: the dir used in place, with no layout
 
     def counts(self) -> dict[str, int]:
@@ -885,7 +885,7 @@ def load_scenario(text: str, base_dir: Path | None = None, default_name: str | N
     _expect_keys(setup, "setup", SETUP_KEYS)
     gradle = _optional(setup, "gradle", str, "setup")
     if gradle is not None and gradle != "wrapper" and not VERSION_RE.fullmatch(gradle):
-        raise GustError(f"setup.gradle: must be 'wrapper' or a Gradle version such as '9.7.1', got {gradle!r}")
+        raise GustError(f"setup.gradle: must be 'wrapper' or a Gradle version such as '9.9.0', got {gradle!r}")
     files, remote = _load_layout(setup.get("layout", {}), base_dir)
     project = _load_project(_optional(setup, "project", str, "setup"), base_dir, project, "layout" in setup)
 
@@ -1498,7 +1498,7 @@ def _settle_binary(value: str, exists) -> tuple[str, str | None]:
         return str(local), None
     if VERSION_RE.fullmatch(value):
         return WRAPPER, value
-    raise GustError(f"--gradle {value!r}: not found on PATH and not a Gradle version such as 9.7.1")
+    raise GustError(f"--gradle {value!r}: not found on PATH and not a Gradle version such as 9.9.0")
 
 
 def _executable(path: Path) -> bool:
@@ -2430,7 +2430,7 @@ def _tail_arg(value: str) -> int:
 
 PRECEDENCE = f"default: setup.gradle, else the project's {WRAPPER}, else gradle from PATH"
 BINARY = f"a Gradle binary, as a name on PATH or in the working directory, or as a path ({WRAPPER} is relative to the project)"
-GRADLE_HELP = (f"{BINARY}, or a version such as 9.7.1, whose wrapper is installed first with gradle from PATH "
+GRADLE_HELP = (f"{BINARY}, or a version such as 9.9.0, whose wrapper is installed first with gradle from PATH "
                f"(the layout needs a settings file); {PRECEDENCE}")
 BINARY_HELP = f"{BINARY}; no version, since the project is set up already; {PRECEDENCE}"
 TMP_HELP = (f"put the out dir at {TMP_SHAPE}; "
@@ -2688,7 +2688,7 @@ def _cli_zip(args) -> int:
     """Write the scenario zip and print its path. A failure raises, for main's one `ERROR: ...` line on stderr, exit
     code 2."""
     if args.gradle is not None and not VERSION_RE.fullmatch(args.gradle):
-        raise GustError(f"--gradle {args.gradle!r}: a Gradle version such as 9.7.1 is expected "
+        raise GustError(f"--gradle {args.gradle!r}: a Gradle version such as 9.9.0 is expected "
                         f"here, for {SCENARIO_MD}; no Gradle runs for a zip, so a binary is of no use")
     text, source, kwargs = read_source(args)
     scenario = _load_named(text, source, **kwargs)
