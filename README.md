@@ -126,7 +126,7 @@ The Gradle the steps run with is the first of:
 
 1. `--gradle <bin>`: a distribution or a local build, as a name on PATH or in
    the working directory, or as a path. A value with a `/` is always a path.
-2. `--gradle 9.7.1`: a version, when the value is not a binary on PATH or in
+2. `--gradle 9.9.0`: a version, when the value is not a binary on PATH or in
    the working directory. A wrapper for it is installed into the project first,
    with `gradle` from PATH, so a local Gradle installation is assumed and the
    layout needs a settings file.
@@ -213,7 +213,7 @@ the wrapper, such as `test -x gradlew`, is refused.
 
 - No Gradle runs, and nothing is installed. The Gradle version comes from
   `setup.gradle`, or from the wrapper's properties when the steps run with the
-  project's own wrapper; pass `--gradle 9.7.1` to name another.
+  project's own wrapper; pass `--gradle 9.9.0` to name another.
 - The zip's path is the only line on stdout. An existing zip is never replaced,
   and a scenario with `setup.project` is refused, since there is nothing to lay
   out.
