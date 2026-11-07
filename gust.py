@@ -2007,7 +2007,7 @@ def flatten(text: str, source: str, base_dir: Path | None = None, default_name: 
     if "base" in layout:
         del layout["base"]
         layout["project"] = scenario.files          # merged by _load_layout, so the files are the ones laid out by setup
-    lines = text.splitlines(keepends=True)
+    lines = re.findall(r"[^\n]*\n|[^\n]+", text)       # at \n only: U+2028 and its kind end no TOML line
     n = next((i for i, line in enumerate(lines) if line.strip() and not line.lstrip().startswith("#")), len(lines))
     lead = "".join(lines[:n]) if any(line.strip() for line in lines[:n]) else ""
     flat = lead + to_toml(data)

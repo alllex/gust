@@ -2298,6 +2298,13 @@ run.shell = "true"
         code, out, _ = self.flat('\n\nname = "x"\n[[steps]]\nrun.shell = "true"\n')
         self.assertEqual(out, 'name = "x"\n\n[[steps]]\nrun.shell = "true"\n')          # blank lines alone are not a comment block
 
+    def test_a_comment_with_a_unicode_line_separator_is_kept(self):
+        for sep in ("\u2028", "\u2029", "\u0085"):                                    # line breaks for Python, not for TOML
+            with self.subTest(sep=repr(sep)):
+                code, out, err = self.flat(f'# a{sep}b\n[[steps]]\nrun.shell = "true"\n')
+                self.assertEqual((code, err), (gs.EXIT_OK, ""))
+                self.assertEqual(out, f'# a{sep}b\n[[steps]]\nrun.shell = "true"\n')
+
     def test_stdin_with_relative_base(self):
         code, out, err = self.cli("flat", "-", stdin='setup.layout.base = "layouts/java.toml"\n[[steps]]\nrun.shell = "true"\n')
         self.assertEqual((code, err), (gs.EXIT_OK, ""))
