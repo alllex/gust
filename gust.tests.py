@@ -392,6 +392,58 @@ run.shell = "true"
                              '[[steps]]\ndelete = "build"\n[[steps]]\nwrite.build = "now a file"')
         gs.load_scenario(L + '[[steps]]\nclear = "build"\n[[steps]]\nwrite."build/a/b.txt" = "again"\n' + edit)
 
+    # File paths, read by Windows rules on every system: regressions, one test each.
+
+    def test_an_edit_finds_a_layout_file_spelled_with_a_leading_dot_slash(self):
+        s = gs.load_scenario('[setup.layout.project]\n"./a.txt" = "a"\n[[steps]]\nedit = [{ file = "a.txt", replace = "a", with = "b" }]\n')
+        self.assertEqual(list(s.files), ["a.txt"])
+
+    def test_two_spellings_of_one_path_in_a_table_are_refused(self):
+        self.assert_rejects('[setup.layout.project]\n"src/b.txt" = "1"\n"./src/b.txt" = "2"\n[[steps]]\nrun.shell = "x"',
+                            "setup.layout.project: './src/b.txt' and 'src/b.txt' are the same path")
+
+    def test_a_file_spelled_with_a_dot_slash_and_a_dir_of_the_same_name_are_refused(self):
+        self.assert_rejects('[setup.layout.project]\n"./a" = "1"\n"a/b.txt" = "2"\n[[steps]]\nrun.shell = "x"',
+                            "setup.layout.project: 'a/b.txt' conflicts with 'a' (setup.layout.project)")
+
+    def test_a_write_of_the_project_dir_itself_is_refused(self):
+        for path in (".", "./", ".\\", "./."):
+            self.assert_rejects(f"[[steps]]\nwrite = {{ '{path}' = 'x' }}", f"steps[1].write.{path!r}: {path!r} is the project dir itself")
+
+    def test_paths_that_differ_in_case_only_are_refused(self):
+        L = '[setup.layout.project]\n"a/b.txt" = "1"\n"src/main/x.txt" = "2"\n'
+        for more, message in (
+                ('"A/b.txt" = "3"\n[[steps]]\nrun.shell = "x"', "setup.layout.project: 'A' and 'a' differ in case only, so they are one"),
+                ('"Src/main/y.txt" = "3"\n[[steps]]\nrun.shell = "x"', "setup.layout.project: 'Src' and 'src' differ in case only"),
+                ('[[steps]]\nwrite."A/B.txt" = "3"', "steps[1].write: 'A' and 'a' differ in case only"),
+                ('[[steps]]\nwrite."a/B.txt" = "3"', "steps[1].write: 'a/B.txt' and 'a/b.txt' differ in case only"),
+                ('[[steps]]\ndelete = "SRC/main"', "steps[1].delete: 'SRC' and 'src' differ in case only"),
+                ('[[steps]]\nedit = [{ file = "a/B.txt", replace = "1", with = "2" }]', "steps[1].edit[1].file: 'a/B.txt' and 'a/b.txt' differ")):
+            with self.subTest(more=more):
+                self.assert_rejects(L + more, message)
+        gs.load_scenario(L + '[[steps]]\ndelete = "a"\n[[steps]]\nwrite."A/b.txt" = "3"')   # once a is gone, A is no variant
+
+    def test_windows_paths_are_read_as_such_on_every_system(self):
+        for path in (r"..\..\x.txt", r"a\..\x.txt"):
+            self.assert_rejects(f"[setup.layout.project]\n'{path}' = 'x'\n[[steps]]\nrun.shell = 'x'", "must not contain '..'")
+        for path in (r"C:\y.txt", "C:y.txt", r"\y.txt", r"\\host\share\y.txt", "C:/y.txt"):
+            self.assert_rejects(f"[[steps]]\nwrite = {{ '{path}' = 'x' }}", "steps[1].write.")
+            self.assert_rejects(f"[[steps]]\nedit = [{{ file = '{path}', replace = 'a', with = 'b' }}]", "steps[1].edit[1].file: path must be relative")
+        s = gs.load_scenario("[setup.layout.project]\n'a\\b.txt' = 'x'\n[[steps]]\nedit = [{ file = 'a/b.txt', replace = 'x', with = 'y' }]\n")
+        self.assertEqual(list(s.files), ["a/b.txt"])
+
+    def test_names_that_are_not_valid_on_windows_are_refused(self):
+        for path, name, why in (("a./b.txt", "a.", "it ends in a dot or a space"), ("b.txt ", "b.txt ", "it ends in a dot or a space"),
+                                ("src/nul.txt", "nul.txt", "it is a device name there"), ("COM1", "COM1", "it is a device name there"),
+                                ("a/b:c.txt", "b:c.txt", "it has the character ':'"), ("what?.txt", "what?.txt", "it has the character '?'"),
+                                ("x\ty", "x\ty", "it has the character '\\t'")):
+            with self.subTest(path=path):
+                key = json.dumps(path)
+                self.assert_rejects(f"[setup.layout.project]\n{key} = 'x'\n[[steps]]\nrun.shell = 'x'",
+                                    f"setup.layout.project.{path!r}: {name!r} is not a valid name on Windows: {why}")
+                self.assert_rejects(f"[[steps]]\ndelete = {key}", f"steps[1].delete: ")
+        gs.load_scenario("[setup.layout.project]\n'console.txt' = 'x'\n'.hidden' = 'x'\n'a b/c.txt' = 'x'\n[[steps]]\nrun.shell = 'x'")
+
 
 class LayoutBaseTest(GustCase):
     def setUp(self):
@@ -2628,13 +2680,11 @@ rm -rf build
 
     def test_no_op_edit_of_a_name_with_a_newline_runs_nothing(self):
         text = '[setup.layout.project]\n"x\\ntouch pwned" = "x\\n"\n[[steps]]\nedit = [{ file = "x\\ntouch pwned", replace = "x", with = "x" }]\n'
-        readme = self.readme(text)
-        self.assertIn("\n# x\\ntouch pwned stays as it is: its text is replaced with the same text\n", readme)
-        self.assertNotIn("\ntouch pwned", readme)
-        if not gs.WINDOWS:                                    # no newline in a file name there
-            project = self.layout_project(text)
-            self.run_snippets(readme, project)
-            self.assertFalse((project / "pwned").exists())
+        with self.assertRaises(gs.GustError) as cm:          # no newline in a file name on Windows, so on no system
+            self.readme(text)
+        self.assertIn("is not a valid name on Windows: it has the character '\\n'", str(cm.exception))
+        self.assertEqual(gs._sh_edit("x\ntouch pwned", "x\n", "x\n"),                     # and should one get there, a comment still
+                         [(["# x\\ntouch pwned stays as it is: its text is replaced with the same text"], None)])
 
     def test_edit_of_a_file_named_dash(self):
         text = '[setup.layout.project]\n"-" = "one\\n"\n[[steps]]\nedit = [{ file = "-", replace = "one", with = "two" }]\n'
@@ -2701,6 +2751,36 @@ rm -rf build
         with self.assertRaises(gs.GustError) as cm:
             gs.project_files(scenario)
         self.assertEqual(str(cm.exception), "setup.layout.remote '../x.txt': path must be relative and must not contain '..'")
+
+    def test_a_backslash_in_a_layout_path_zips_as_a_slash_on_every_system(self):
+        scenario = self.scenario_file("[setup.layout.project]\n'a\\b.txt' = 'b'\n[[steps]]\nwrite.'c\\d.txt' = \"d\\n\"\n", "bs.toml")
+        self.assertEqual(self.cli("zip", str(scenario))[0], gs.EXIT_OK)
+        entries = self.entries(self.tmp / "bs.zip")
+        self.assertEqual(list(entries), ["bs/", "bs/SCENARIO.md", "bs/a/", "bs/a/b.txt"])
+        self.assertIn("mkdir -p c &&\ncat > c/d.txt", entries["bs/SCENARIO.md"][2].decode())
+
+    def test_remote_names_get_the_windows_checks_of_a_layout(self):
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+        for i, (name, message) in enumerate((("a\\b.txt", "on Windows a backslash is a separator, so the name is another path there"),
+                                             ("x.", "'x.' is not a valid name on Windows: it ends in a dot or a space"),
+                                             ("aux.txt", "'aux.txt' is not a valid name on Windows: it is a device name there"))):
+            craft = self.tmp / f"craft{i}"
+
+            def git(*args, data=None):
+                return subprocess.run(["git", *args], cwd=craft, input=data, check=True, capture_output=True, env=env).stdout.decode().strip()
+            craft.mkdir()
+            git("init", "-q")
+            blob = git("hash-object", "-w", "--stdin", data=b"x\n")
+            tree = git("mktree", data=f"100644 blob {blob}\t{name}\n100644 blob {blob}\tok.txt\n".encode())   # git checkout refuses some
+            sha = git("-c", "user.name=t", "-c", "user.email=t@t", "commit-tree", tree, "-m", "one")
+            git("update-ref", "HEAD", sha)
+            scenario = gs.load_scenario(f'setup.layout.remote = "{craft.as_posix()}#{sha}"\n[[steps]]\nrun.gradle = "help"\n')
+            scenario.remote.dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(craft), str(scenario.remote.dir))      # as if fetched
+            with self.subTest(name=name):
+                with self.assertRaises(gs.GustError) as cm:
+                    gs.project_files(scenario)
+                self.assertEqual(str(cm.exception), f"setup.layout.remote {name!r}: {message}")
 
     def test_scenario_md_in_any_case_is_refused(self):
         for rel in ("scenario.md", "Scenario.MD/x"):               # one file on macOS and Windows: the replay would overwrite it
