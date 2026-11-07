@@ -35,6 +35,7 @@ import subprocess
 import tempfile
 import time
 import tomllib
+import unicodedata
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
@@ -131,10 +132,29 @@ Scenario file format (TOML)
 ===========================
 
 A scenario is one TOML file. Unknown keys are rejected, with the key path in
-the message. Paths are relative, may not contain "..", and are written as
-quoted keys ("src/Main.java" = ...). Write file contents as literal strings
-(''' ... ''') so $ and backslashes need no escaping. No path anywhere in a
-scenario, setup.project and setup.layout.base included, may contain a NUL.
+the message. Paths are written as quoted keys ("src/Main.java" = ...). Write
+file contents as literal strings (''' ... ''') so $ and backslashes need no
+escaping. No path anywhere in a scenario, setup.project and setup.layout.base
+included, may contain a NUL.
+
+Every file path (a key of the project table or of a write, the file of an
+edit, the directory of a delete or clear) is relative to the project dir, and
+is read by Windows rules on every system, so a scenario means the same
+everywhere: / and \\ both separate names, and a . name, as in a leading ./, is
+dropped ("./a.txt" is a.txt). When the scenario is loaded, these are refused:
+a rooted or drive path in any form (/x, C:\\x, C:x, \\x, \\\\host\\share), any
+"..", a NUL, "." (the project dir itself), a file path that ends in / or \\,
+a name .git in any case (.git/config, sub/.GIT), and a name that is not valid
+on Windows: one that ends in a dot or a space, holds one of < > : " | ? * or a
+control character, or is a device name such as CON, NUL, COM1, or nul.txt.
+Also refused: two spellings of one path in one table ("src/a.txt" and
+"./src/a.txt"), and two paths that differ in case or Unicode form only
+("A/b.txt" and "a/b.txt"; an accented letter as one code point, NFC, and as
+two, NFD; a later write or delete of "Src/x" after "src/y"), since on macOS or
+Windows they are one path. This holds against the files on disk too: those of
+the remote commit and of the project dir in place, unless gone with an earlier
+delete or clear. Names within the remote commit that differ so are kept as
+they are. Each path is shown with forward slashes.
 
 top level
   name          string   optional   slug: [A-Za-z0-9][A-Za-z0-9._-]*. Default: the scenario file's
@@ -192,13 +212,9 @@ steps[]                             each step has exactly one kind: run, write, 
                                     made, empty, as long as its parent is there
 
 The directory of delete and clear is always relative to the project dir and
-inside it; this is a fixed rule, for safety. Unlike the paths of write and
-edit, it is read by Windows rules on every system: / and \\ both separate
-names, and a rooted or drive path in any form (/x, C:\\x, C:x, \\x,
-\\\\host\\share) is refused everywhere. A leading ~, any "..", a NUL, a name
-that ends in a dot or a space, a name .git in any case (.git, sub/.GIT), and
-"." (the project dir itself) are refused too. All of this is checked when the
-scenario is loaded. Right before the step runs, the path is checked again on
+inside it; this is a fixed rule, for safety. Beyond the rules for every file
+path, above, a leading ~ is refused (a trailing / or \\ is fine). Right before
+the step runs, the path is checked again on
 disk: it must not be a link (a symbolic link or a junction is refused, not
 followed or removed); with the links above it followed it must be inside the
 project dir and on the same device (a mount there is refused); and it must not
@@ -673,13 +689,14 @@ are refused:
   - a SCENARIO.md in the project, or a write, edit, delete, or clear of it, in
     any case (scenario.md too, as on macOS and Windows)
   - a name in the remote commit that a layout could not have, such as one
-    with a .. in it
+    with a .. or a backslash in it, or one that is not valid on Windows
   - a shell step that uses the wrapper once ./gradlew is read as gradle, such
     as `test -x gradlew` or a path under gradle/wrapper
   - a symbolic link in the remote commit that is absolute or leads out of the
     project, or one to the project dir or to SCENARIO.md
 The zip is made from the files in memory, never from a copy on disk, so two
-names that differ in case only stay two files on every system.
+names in the remote commit that differ in case only stay two files on every
+system.
 
 Windows
 =======
@@ -714,7 +731,8 @@ fetched first; a load error is prefixed with the scenario's path (or stdin).
     the remote checkout, the project dir in place, or an earlier write step,
     and not under an earlier delete or clear; no `delete` or `clear` path is
     such a file; no path in the project table or a write step is both a file
-    and the parent directory of another.
+    and the parent directory of another; no two paths, nor a path and a file
+    on disk, differ in case or Unicode form only.
   - The scenario file exists (any name; the out dir is named after its stem),
     and the out dir does not contain it, nor the project dir in place.
   - With setup.project or --project: the directory exists, there is no
@@ -925,33 +943,53 @@ def load_scenario(text: str, base_dir: Path | None = None, default_name: str | N
 
 
 def check_file_flow(scenario: Scenario) -> None:
-    """Check that every edit's file exists by then, that the path of every delete or clear is a directory, and that no
-    path is both a file and a directory.
+    """Check that every edit's file exists by then, that the path of every delete or clear is a directory, that no
+    path is both a file and a directory, and that no two paths differ in case or Unicode form only, as they are one on
+    macOS or Windows: two of the scenario's own, or one of them and one on disk. Names that differ so within the remote
+    commit stay as they are, as the scenario has not made them.
 
-    The files on disk are those of the remote checkout, which must be fetched by then, or of the project dir in place.
+    The files on disk are those of the remote commit, which must be fetched by then, or of the project dir in place.
     """
     root = scenario.remote.source if scenario.remote else scenario.project
     files: dict[str, str] = {}   # path -> where it first appears
     dirs: dict[str, str] = {}    # known dir -> why it is one: a file under it and where that appears, or a delete or clear
-    gone: list[tuple[str, ...]] = []           # the parts of each dir deleted or cleared so far
+    gone: list[str] = []                        # each dir deleted or cleared so far
+    folded: dict[str, str] = {}                 # each path in files and dirs, by _fold -> as it is there
     on_disk = "setup.layout.remote" if scenario.project is None else str(scenario.project)
+    names_in = _names_on_disk(scenario)
+
+    def same_case(path: str, where: str) -> None:
+        """Refuse a path, or a dir above it, that differs in case or Unicode form only from one in files or dirs, or from
+        one on disk that is not under a dir deleted or cleared by then."""
+        for p in (*_parents(path), path):
+            key, (parent, _, name) = _fold(p), p.rpartition("/")
+            there = names_in(parent).get(_fold(name), set())
+            if folded.get(key, p) != p:
+                other = repr(folded[key])
+            elif there and name not in there and not any(_under(key, _fold(g)) for g in gone):
+                other = f"{(parent + '/' if parent else '') + min(there)!r} ({on_disk})"
+            else:
+                continue
+            raise GustError(f"{where}: {p!r} and {other} differ in case or Unicode form only, so they are one path on "
+                            f"macOS or Windows")
 
     def seen(rel: str) -> bool:
         """Whether the checkout or the project dir in place has that file, and it is not under a dir deleted or cleared
         by then."""
-        return root is not None and (root / rel).is_file() and not any(Path(rel).parts[:len(g)] == g for g in gone)
+        return root is not None and (root / rel).is_file() and not any(_under(rel, g) for g in gone)
 
     def add(path: str, where: str) -> None:
+        same_case(path, where)
         if path in dirs:
             raise GustError(f"{where}: {path!r} is a directory ({dirs[path]})")
-        parts = Path(path).parts
-        for k in range(1, len(parts)):
-            ancestor = "/".join(parts[:k])
+        for ancestor in _parents(path):
             if ancestor in files or seen(ancestor):
                 origin = files.get(ancestor, on_disk)
                 raise GustError(f"{where}: {path!r} conflicts with {ancestor!r} ({origin}); one is a directory of the other")
             dirs.setdefault(ancestor, f"{path!r} in {where}")
+            folded[_fold(ancestor)] = ancestor
         files[path] = where
+        folded[_fold(path)] = path
 
     for path in scenario.files:
         add(path, "setup.layout.project")
@@ -961,19 +999,67 @@ def check_file_flow(scenario: Scenario) -> None:
                 add(path, f"steps[{i}].write")
         elif isinstance(step, EditStep):
             for j, edit in enumerate(step.edits, start=1):
+                same_case(edit.file, f"steps[{i}].edit[{j}].file")
                 if edit.file not in files and not seen(edit.file):
                     raise GustError(f"steps[{i}].edit[{j}].file: {edit.file!r} is not in "
                                     f"{'the layout' if scenario.project is None else scenario.project} and no earlier step writes it")
         elif isinstance(step, DeleteStep):
-            where, parts = f"steps[{i}].{step.kind}", Path(step.dir).parts
+            where = f"steps[{i}].{step.kind}"
+            same_case(step.dir, where)
             if step.dir in files or seen(step.dir):
                 raise GustError(f"{where}: {step.dir!r} is a file ({files.get(step.dir, on_disk)}), not a directory")
-            for path in [p for p in (*files, *dirs) if Path(p).parts[:len(parts)] == parts]:
+            for path in [p for p in (*files, *dirs) if _under(p, step.dir)]:
                 files.pop(path, None)
                 dirs.pop(path, None)
-            for k in range(1, len(parts) + (step.kind == "clear")):   # the dirs above it, and a cleared dir itself
-                dirs["/".join(parts[:k])] = f"after {where}"
-            gone.append(parts)
+                folded.pop(_fold(path), None)
+            for d in _parents(step.dir) + ([step.dir] if step.kind == "clear" else []):   # those above it, and a cleared one
+                dirs[d] = f"after {where}"
+                folded[_fold(d)] = d
+            gone.append(step.dir)
+
+
+def _fold(path: str) -> str:
+    """A path as macOS compares names: case-folded, and in one Unicode form, NFD. Windows folds case alone."""
+    return unicodedata.normalize("NFD", unicodedata.normalize("NFD", path).casefold())
+
+
+def _names_on_disk(scenario: Scenario):
+    """For the files on disk that check_file_flow checks against: a function from a dir, with forward slashes and "" for
+    the top, to its names there, by _fold -> as they are. Those of the remote commit come from git's objects, so they
+    are the commit's own on every machine; those of the project dir in place are listed when asked for."""
+    if scenario.remote is not None:
+        tree: dict[str, dict[str, set[str]]] = {}
+        for rel in _remote_names(scenario.remote):
+            parts = rel.split("/")
+            for k in range(len(parts)):
+                tree.setdefault("/".join(parts[:k]), {}).setdefault(_fold(parts[k]), set()).add(parts[k])
+        return lambda parent: tree.get(parent, {})
+    if scenario.project is not None:
+        project = scenario.project
+
+        @functools.cache
+        def listed(parent: str) -> dict[str, set[str]]:
+            try:
+                names = os.listdir(project / parent)
+            except OSError:                           # not there, or not a dir
+                return {}
+            out: dict[str, set[str]] = {}
+            for name in names:
+                out.setdefault(_fold(name), set()).add(name)
+            return out
+        return listed
+    return lambda parent: {}
+
+
+def _parents(rel: str) -> list[str]:
+    """The dirs above a path with forward slashes, top down: _parents("a/b/c") == ["a", "a/b"]."""
+    parts = rel.split("/")
+    return ["/".join(parts[:k]) for k in range(1, len(parts))]
+
+
+def _under(rel: str, top: str) -> bool:
+    """Whether a path is the dir top or inside it, both with forward slashes."""
+    return rel == top or rel.startswith(top + "/")
 
 
 def _load_layout(raw: object, base_dir: Path | None) -> tuple[dict[str, str], Remote | None]:
@@ -1031,7 +1117,7 @@ def _load_remote(link: str) -> Remote:
         raise GustError(f"setup.layout.remote: {sha!r} is not a commit hash (7 to 40 hex digits); branches and tags are not accepted")
     subdir = (subdir or "").strip("/")
     if subdir:
-        _check_relative_path(subdir, "setup.layout.remote subdirectory")
+        subdir = _file_path(subdir, "setup.layout.remote subdirectory", "directory")
     return Remote(link=link, url=url, sha=sha, subdir=subdir)
 
 
@@ -1060,11 +1146,14 @@ def _load_files(raw: object, where: str) -> dict[str, str]:
     if not isinstance(raw, dict):
         raise GustError(f"{where}: must be a table of path = content")
     files: dict[str, str] = {}
+    spelled: dict[str, str] = {}                     # normalized path -> as written
     for path, content in raw.items():
-        _check_relative_path(path, f"{where}.{path!r}")
+        rel = _file_path(path, f"{where}.{path!r}")
+        if rel in spelled:
+            raise GustError(f"{where}: {path!r} and {spelled[rel]!r} are the same path")
         if not isinstance(content, str):
             raise GustError(f"{where}.{path!r}: content must be a string")
-        files[path] = content
+        files[rel], spelled[rel] = content, path
     return files
 
 
@@ -1096,8 +1185,7 @@ def _load_step(raw: object, index: int) -> Step:
         if not isinstance(e, dict):
             raise GustError(f"{ew}: must be a table")
         _expect_keys(e, ew, EDIT_KEYS)
-        file = _require(e, "file", str, ew)
-        _check_relative_path(file, f"{ew}.file")
+        file = _file_path(_require(e, "file", str, ew), f"{ew}.file")
         replace = _require(e, "replace", str, ew)
         if not replace:
             raise GustError(f"{ew}.replace: must not be empty")
@@ -1176,32 +1264,54 @@ def _expect_keys(table: dict, where: str, allowed: set[str]) -> None:
         raise GustError(f"{where}: unknown key(s) {', '.join(unknown)}")
 
 
-def _check_relative_path(path: str, where: str) -> None:
-    p = Path(path)
-    if "\0" in path:
-        raise GustError(f"{where}: path must not contain a NUL character")
-    if not path or p.anchor or ".." in p.parts:       # an anchor is a root or a drive: "/", on Windows also "\" or "C:"
-        raise GustError(f"{where}: path must be relative and must not contain '..'")
-
-
-def _dir_in_project(path: str, where: str) -> str:
-    """A delete or clear dir, with forward slashes. It is never rooted and never the project dir or above it, on any
-    system: read as a Windows path, where / and \\ both separate and drives and \\\\host\\share count as roots, so
-    every rooted or drive form is refused everywhere. A leading ~, a NUL, a name that ends in a dot or a space
-    (dropped on Windows, so ".. " would be ".."), and a name .git in any case are refused too."""
+def _file_path(path: str, where: str, kind: str = "file") -> str:
+    """A path in the project, of a file or (by kind) a directory, with forward slashes. It is read as a Windows path on
+    every system, so that a scenario means the same everywhere: / and \\ both separate names, and a . name (as in a
+    leading ./) is dropped. Refused: a NUL, a rooted or drive form, a "..", the project dir itself, a file path that ends
+    in a separator, a name that is not valid on Windows, and a name .git in any case."""
     p = PureWindowsPath(path)
     if "\0" in path:
         raise GustError(f"{where}: path must not contain a NUL character")
-    if not path or p.anchor or ".." in p.parts or path.startswith("~"):
-        raise GustError(f"{where}: must be a path relative to the project dir, without '..' or a leading '~', got {path!r}")
-    if any(name.endswith((".", " ")) for name in p.parts):
-        raise GustError(f"{where}: no name in the path may end in a dot or a space, as those are dropped on Windows, got {path!r}")
-    if any(name.lower() == ".git" for name in p.parts):
-        raise GustError(f"{where}: a git repository's .git is never deleted or cleared, got {path!r}")
+    if p.drive:                                       # "C:", or "a:" in "a:b", or "\\\\host\\share"
+        raise GustError(f"{where}: path must be relative, but {p.drive!r} is a drive on Windows")
+    if not path or p.root or ".." in p.parts:
+        raise GustError(f"{where}: path must be relative and must not contain '..'")
     if not p.parts:
-        raise GustError(f"{where}: {path!r} is the project dir itself; name a directory in it")
+        raise GustError(f"{where}: {path!r} is the project dir itself; name a {kind} in it")
+    if kind == "file" and path.endswith(("/", "\\")):
+        raise GustError(f"{where}: {path!r} ends in a separator; name a file, not a directory")
+    _check_windows_names(p, where)
+    if any(name.casefold() == ".git" for name in p.parts):
+        raise GustError(f"{where}: a git repository's .git is never changed by a scenario, got {path!r}")
     return p.as_posix()
 
+
+WINDOWS_DEVICES = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", *(d + n for d in ("COM", "LPT") for n in "123456789\u00b9\u00b2\u00b3")}
+
+
+def _check_windows_names(p: PureWindowsPath, where: str) -> None:
+    """Refuse a name in the path that is not valid on Windows. A name that ends in a dot or a space is stored without
+    them there, so it would be another name."""
+    for name in p.parts:
+        m = re.search(r'[<>:"|?*\x00-\x1f]', name)
+        if name.endswith((".", " ")):
+            why = "it ends in a dot or a space"
+        elif m:
+            why = f"it has the character {m[0]!r}"
+        elif name.partition(".")[0].rstrip(" ").upper() in WINDOWS_DEVICES:
+            why = "it is a device name there"
+        else:
+            continue
+        raise GustError(f"{where}: {name!r} is not a valid name on Windows: {why}")
+
+
+def _dir_in_project(path: str, where: str) -> str:
+    """A delete or clear dir, with forward slashes: a path by the rules of _file_path, so it is never rooted and never the
+    project dir or above it, on any system. A leading ~ is refused too, as a shell reads it as a home dir."""
+    rel = _file_path(path, where, "directory")
+    if path.startswith("~"):
+        raise GustError(f"{where}: a leading '~' is refused, as a shell reads it as a home dir, got {path!r}")
+    return rel
 
 # --------------------------------------------------------------------------- setting up
 
@@ -2230,10 +2340,16 @@ def project_files(scenario: Scenario) -> dict[str, tuple[int, bytes]]:
     A layout file keeps the mode of a remote file it replaces, as on setup."""
     files = _remote_files(scenario.remote) if scenario.remote is not None else {}
     for rel, content in scenario.files.items():
-        rel = Path(rel).as_posix()
         mode = EXEC_MODE if files.get(rel, (FILE_MODE,))[0] == EXEC_MODE else FILE_MODE
         files[rel] = (mode, content.encode("utf-8"))
     return dict(sorted(files.items()))
+
+
+def _remote_names(remote: Remote) -> list[str]:
+    """The paths of the files in the fetched remote commit, or in its subdirectory, from git's objects."""
+    tree = f"HEAD:{remote.subdir}" if remote.subdir else "HEAD"
+    names = _git(remote.dir, "ls-tree", "-r", "-z", "--name-only", tree).split(b"\0")
+    return [name.decode("utf-8", errors="replace") for name in names if name]
 
 
 def _remote_files(remote: Remote) -> dict[str, tuple[int, bytes]]:
@@ -2250,7 +2366,8 @@ def _remote_files(remote: Remote) -> dict[str, tuple[int, bytes]]:
             rel = name.decode("utf-8")
         except UnicodeDecodeError:
             raise GustError(f"setup.layout.remote: the name {name!r} is not UTF-8") from None
-        _check_relative_path(rel, f"setup.layout.remote {rel!r}")     # as a layout's names
+        if _file_path(rel, f"setup.layout.remote {rel!r}") != rel:   # as a layout's names
+            raise GustError(f"setup.layout.remote {rel!r}: on Windows a backslash is a separator, so the name is another path there")
         if kind == "blob":
             blobs.append((rel, {"100755": EXEC_MODE, "120000": LINK_MODE}.get(mode, FILE_MODE), sha))
     data = _git(remote.dir, "cat-file", "--batch", input="".join(f"{sha}\n" for _, _, sha in blobs).encode())
@@ -2302,7 +2419,7 @@ def _write_zip(target: Path, top: str, files: dict[str, tuple[int, bytes]]) -> N
     """Zip the files under top/ into a new file at target: entries sorted, each dated ZIP_DATE, with Unix modes
     (executable or not, or a link). The file is created only if it is not there yet, and removed again if anything
     fails."""
-    dirs = {top} | {"/".join([top, *rel.split("/")[:k]]) for rel in files for k in range(1, rel.count("/") + 1)}
+    dirs = {top} | {f"{top}/{d}" for rel in files for d in _parents(rel)}
     entries = sorted([(d + "/", DIR_MODE, b"") for d in dirs] + [(f"{top}/{rel}", mode, data) for rel, (mode, data) in files.items()])
     created = False
     try:
@@ -2347,7 +2464,7 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
         out += ["In the shell steps, Gradle is `$GRADLE`, and any extra arguments are in `$GRADLE_ARGS`. Set them first:",
                 "", "```sh", "GRADLE=gradle", "GRADLE_ARGS=", "```", ""]
     files = dict(files)
-    dirs = {"/".join(rel.split("/")[:k]) for rel in files for k in range(1, rel.count("/") + 1)}
+    dirs = {d for rel in files for d in _parents(rel)}
     for i, step in enumerate(scenario.steps, start=1):
         body: list[str] = []
         notes: list[str] = []                                # Markdown paragraphs above the block
@@ -2368,18 +2485,17 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
             body.append(command)
         elif isinstance(step, WriteStep):
             for rel, content in step.files.items():
-                rel = Path(rel).as_posix()
                 if _is_scenario_md(rel):
                     raise GustError(f"steps[{i}].write: {rel!r} is where the zip's {SCENARIO_MD} goes")
                 parent = rel.rpartition("/")[0]
                 if parent and parent not in dirs:
                     commands.append(([f"mkdir -p {_sh_path(parent)}"], 0))
-                    dirs |= {"/".join(parent.split("/")[:k]) for k in range(1, parent.count("/") + 2)}
+                    dirs |= set(_parents(rel))
                 commands.append(_sh_write(rel, content))
                 files[rel] = content.encode("utf-8")
         elif isinstance(step, EditStep):
             for j, edit in enumerate(step.edits, start=1):
-                rel, where = Path(edit.file).as_posix(), f"steps[{i}].edit[{j}]"
+                rel, where = edit.file, f"steps[{i}].edit[{j}]"
                 if _is_scenario_md(rel):
                     raise GustError(f"{where}.file: {rel!r} is where the zip's {SCENARIO_MD} goes")
                 if rel not in files:
@@ -2400,9 +2516,8 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
                 raise GustError(f"steps[{i}].{step.kind}: {step.dir!r} is where the zip's {SCENARIO_MD} goes")
             q = _sh_path(step.dir)
             commands.append(([f"rm -rf {q}" if step.kind == "delete" else f"rm -rf {q} && mkdir {q}"], 0))
-            prefix = step.dir + "/"
-            files = {rel: data for rel, data in files.items() if not rel.startswith(prefix)}
-            dirs = {d for d in dirs if d != step.dir and not d.startswith(prefix)} | ({step.dir} if step.kind == "clear" else set())
+            files = {rel: data for rel, data in files.items() if not _under(rel, step.dir)}
+            dirs = {d for d in dirs if not _under(d, step.dir)} | ({step.dir} if step.kind == "clear" else set())
         body += _chained(commands)
         heading = _visible(label or step.label()).strip()
         if "\n" in heading:
@@ -2515,7 +2630,7 @@ def _sh_edit(rel: str, before: str, after: str) -> tuple[list[str], list[Command
     """A note for the text above the block, if any, and the shell commands for turning before into after at rel: a
     unified diff for patch -p1, or the whole file written anew where a diff will not do: a control character such as a
     carriage return, whitespace in the path, or a file named -, which BSD patch reads as stdout."""
-    name = _code(_visible(rel).replace("\n", "\\n"))          # on one line
+    name = _code(rel)
     if before == after:
         return [f"The file {name} stays as it is: its text is replaced with the same text."], []
     if _CONTROL_RE.search(before + after) or re.search(r"\s", rel) or rel == "-":
