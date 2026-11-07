@@ -663,6 +663,13 @@ class LayoutRemoteTest(GustCase):
                 self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
                 self.assertIn("'missing.txt' is not in the layout", err)
 
+    def test_check_takes_a_project_binary_from_an_uncached_remote(self):
+        s = self.write(f'setup.layout.remote = "{self.url}#{self.sha}"', '[[steps]]\nrun.gradle = "help"\n')
+        code, out, err = self.cli("check", str(s), "--gradle", WRAPPER)              # in the commit, not fetched yet
+        self.assertEqual((code, err), (gs.EXIT_OK, ""))
+        self.assertIn(f"gradle:   {WRAPPER} (--gradle; not checked, remote not cached)\n", out)
+        self.assertEqual(self.cli("run", str(s), "--gradle", WRAPPER, "--keep-daemons")[0], gs.EXIT_OK)   # as run takes it
+
     def test_gradle_wrapper_field(self):
         scenario = self.load(f'setup.gradle = "wrapper"\nsetup.layout.remote = "{self.url}#{self.sha}"',
                              '[[steps]]\nrun.gradle = { args = "help", expect = { output = ["gradlew help"] } }\n')

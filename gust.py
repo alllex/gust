@@ -388,7 +388,8 @@ With --project DIR, an existing project dir is used in place (see In place).
 --gradle takes a binary or a version, read in this order:
   1. A value with a "/" is a path to a binary. ./gradlew (or any ./path) is
      relative to the project dir and must be in the project table, the
-     remote checkout, or the project dir in place. Anything else is a
+     remote checkout, or the project dir in place (check leaves a remote
+     that is not cached yet to run). Anything else is a
      filesystem path, such as <distribution>/bin/gradle, and must be an
      executable file (a leading ~ is expanded).
   2. A value without a "/" that names an executable on PATH or in the working
@@ -1418,10 +1419,12 @@ def settle_gradle(scenario: Scenario, cli_value: str | None, root: Path | None, 
     refused then, and the scenario's version means the wrapper installed at setup, probed like any
     binary.
     """
-    def exists(rel: str) -> bool:
-        return rel in scenario.files or (root is not None and (root / rel).is_file())
-
     unfetched = root is None and scenario.remote is not None              # check with an unfetched remote
+
+    def exists(rel: str) -> bool:
+        """Whether the project has that file; with an unfetched remote that is known on run only, so it counts."""
+        return unfetched or rel in scenario.files or (root is not None and (root / rel).is_file())
+
     if cli_value is None:
         source = "scenario" if scenario.gradle is not None else "default"
         install = scenario.gradle if scenario.gradle not in (None, "wrapper") else None
