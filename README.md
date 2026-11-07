@@ -34,12 +34,15 @@ name = "the test passes"
 run.gradle = "test"
 
 [setup.layout.project]
+# language=kotlin
 "settings.gradle.kts" = 'rootProject.name = "testing-loop"'
+# language=kotlin
 "build.gradle.kts" = '''
 plugins { java }
 repositories { mavenCentral() }
 testing.suites.named<JvmTestSuite>("test") { useJUnitJupiter("5.11.4") }
 '''
+# language=java
 "src/test/java/demo/GreeterTest.java" = '''
 package demo;
 import org.junit.jupiter.api.Test;
@@ -143,7 +146,9 @@ user home) are made there. To avoid that, pass `--out` or `--tmp` and set
 A scenario built on a layout file becomes one self-contained file with
 `gust flat loop.toml > loop.flat.toml`: the layout file's files are merged into
 `[setup.layout.project]` as for a run, and `setup.layout.remote` stays a link.
-The comments at the top of the file are kept, the others are lost.
+The comments at the top of the file are kept, the others are lost, and a
+`# language=` comment goes above each file with a known extension (see
+[Highlighting in your editor](#highlighting-in-your-editor)).
 
 The Gradle the steps run with is the first of:
 
@@ -174,6 +179,66 @@ About that choice:
 Arguments after `--` go onto every Gradle step, last, so they take precedence
 over the scenario's: `gust run loop.toml -- --isolated-projects`. Shell steps
 get them as `$GRADLE_ARGS`.
+
+## Highlighting in your editor
+
+**IntelliJ IDEA.** With a `# language=kotlin` comment on the line above a
+file, its content is highlighted as Kotlin. Such a comment is for IntelliJ only.
+`gust flat` writes one above each file with a known extension, and you can write
+them by hand too.
+
+**Neovim** 0.10 or newer, with tree-sitter highlighting on for TOML. Save this
+as `~/.config/nvim/after/queries/toml/injections.scm`, so that each `'''` string
+is parsed in the language of the file name in its key. It needs the `toml`
+parser, and one for each language in the files, such as `kotlin`, `java`,
+`groovy`, or `bash`.
+
+```query
+;; extends
+((pair (quoted_key) @injection.filename (string) @injection.content)
+  (#lua-match? @injection.content "^'''")
+  (#gsub! @injection.filename "^[\"'](.*)[\"']$" "%1")
+  (#offset! @injection.content 0 3 0 -3))
+```
+
+**bat.** Save this as `GustToml.sublime-syntax` in the `syntaxes` directory
+below, then rebuild the cache. Each `'''` string under a key with one of these
+extensions is highlighted in its language; add a match for any other.
+
+```yaml
+%YAML 1.2
+---
+name: Gust TOML
+file_extensions: [toml]
+scope: source.toml.gust
+variables:
+  file: '^\s*"[^"]*\.'
+  tq: "'''"
+contexts:
+  main:
+    - match: '{{file}}kts?"\s*=\s*{{tq}}'
+      scope: string.quoted.triple.toml
+      embed: scope:source.Kotlin
+      escape: '{{tq}}'
+    - match: '{{file}}java"\s*=\s*{{tq}}'
+      scope: string.quoted.triple.toml
+      embed: scope:source.java
+      escape: '{{tq}}'
+    - match: '{{file}}(gradle|groovy)"\s*=\s*{{tq}}'
+      scope: string.quoted.triple.toml
+      embed: scope:source.groovy
+      escape: '{{tq}}'
+    - match: '{{file}}sh"\s*=\s*{{tq}}'
+      scope: string.quoted.triple.toml
+      embed: scope:source.shell.bash
+      escape: '{{tq}}'
+    - include: scope:source.toml
+```
+
+```
+mkdir -p "$(bat --config-dir)/syntaxes"
+bat cache --build
+```
 
 ## What a run leaves behind
 
