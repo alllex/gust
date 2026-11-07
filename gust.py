@@ -229,7 +229,7 @@ steps[].edit[]
   replace       string   required   non-empty; must occur exactly once in the file when the step runs,
                                     where a line end matches CRLF, LF and CR alike
   with          string   required   the replacement text, written as it is, except that in a file
-                                    with only CRLF or only LF line ends, each \\n not after a \\r
+                                    with only CRLF, only LF or only CR line ends, each \\n not after a \\r
                                     is written as the file's line end
 
 Each check of a run step comes out as expected or unexpected. The run stops at
@@ -1513,10 +1513,10 @@ def _edited_text(text: str, edit: Edit) -> str:
 
 
 def _line_end(text: str) -> str | None:
-    """The line end of a file with one kind, "\\r\\n" or "\\n"; None for a file with both kinds, or none."""
+    """The line end of a file with one kind, "\\r\\n", "\\n" or "\\r"; None for a file with more kinds, or none."""
     crlf = text.count("\r\n")
-    lf = text.count("\n") - crlf
-    return "\r\n" if crlf and not lf else "\n" if lf and not crlf else None
+    kinds = [eol for eol, n in (("\r\n", crlf), ("\n", text.count("\n") - crlf), ("\r", text.count("\r") - crlf)) if n]
+    return kinds[0] if len(kinds) == 1 else None
 
 
 def _delete_dir(run: Run, step: DeleteStep) -> str:

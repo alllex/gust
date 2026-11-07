@@ -1010,7 +1010,10 @@ class SetupTest(GustCase):
             (b"a\nb", "a\nb", "c", b"c"),                                             # no final line end
             (b"abc", "b", "1\n2", b"a1\n2c"),                                         # no line end at all: as written
             (b"abc", "b", "1\r\n2", b"a1\r\n2c"),
+            (b"\r  \r", "  ", "\n", b"\r\r\r"),                                       # CR: a bare \n in with stands for CR
+            (b"a\rb\rc", "a\nb", "x\ny\r\nz", b"x\ry\r\nz\rc"),                       # CR: \r\n in with is written as it is
             (b"a\nb\r\nc\n", "b\nc", "B\nC", b"a\nB\nC\n"),                           # both kinds: with as written
+            (b"a\rb\nc", "c", "x\ny", b"a\rb\nx\ny"),                                   # CR and LF: with as written
             (b"a\r\nb\nc\n", "a\r\nb", "x\r\ny", b"x\r\ny\nc\n"),
         ]:
             path.write_bytes(before)
