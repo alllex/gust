@@ -361,9 +361,9 @@ Commands
                                   With a remote, the header follows `remote:   <link>` and
                                   `checkout: <dir> (cached)`, or, when the remote is not in
                                   .gust/remotes yet, the one line `remote:   <link> (not cached;
-                                  fetched on run)`; then nothing that needs the commit's files is
-                                  checked, such as the files of edit and the paths of delete and
-                                  clear, until the remote is fetched.
+                                  fetched on run)`; then the file checks (edit files, the paths of
+                                  delete and clear, a path that is both a file and a directory)
+                                  wait until the remote is fetched.
                                   The --json summary is {scenario, description, gradle,
                                   gradle_version, steps (a count), step_counts, remote {link,
                                   cached} when there is one, project when in place, result}, with
@@ -496,7 +496,7 @@ in lower case, all under the key `result`. The keys of run's summary, in order:
   result                 the run: "success", "failure", or "error"; with "error", `error`
                          holds the message: the step's, or `wrapper install failed: exit=N
                          -> install-wrapper.log`
-  steps[]                the steps that ran, in order; none after a failed wrapper install
+  steps[]                the steps that ran, in order; [] after a failed wrapper install
   steps[].index          the step's number, i in [i/N]
   steps[].kind           "gradle", "shell", "write", "edit", "delete", or "clear"
   steps[].name           the step's name, given or implied
@@ -606,8 +606,9 @@ success, the zip's path is the only line on stdout.
     commit. Otherwise no version is named.
 
 SCENARIO.md has the scenario's name as its title, the description, a
-`Needs Gradle <version>, as gradle on PATH.` line, and then each step under
-a `### N. <step name>` heading with its own sh block:
+"Needs Gradle <version>, as `gradle` on PATH." line (without <version> when
+none is known), and then each step under a `### N. <step name>` heading with
+its own sh block:
 
   run.gradle      `gradle <args>`, after comments for the expectations:
                   `# expected to fail`, `# expected in the output: ...`,
@@ -618,14 +619,14 @@ a `### N. <step name>` heading with its own sh block:
   write           a `cat > <file> <<'EOF'` heredoc (EOF2, EOF3, ... when a line
                   of the file is EOF), with `mkdir -p` for a new directory. A file
                   without a final newline, or with a carriage return or other
-                  control character, is written with printf. So is a file with
-                  a line that starts with E, EO, or EOF and then a non-ASCII
-                  character, as dash before 0.5.13 drops a byte from such a
-                  line in a heredoc
+                  control character but tab, is written with printf. So is a
+                  file with a line that starts with E, EO, or EOF and then a
+                  non-ASCII character, as dash before 0.5.13 drops a byte from
+                  such a line in a heredoc
   edit            a unified diff in a `patch -p1` heredoc; for a file with a
-                  carriage return or other control character, whitespace in its
-                  path, or the name -, the whole file as for write, with its line
-                  ends kept
+                  carriage return or other control character but tab, whitespace
+                  in its path, or the name -, the whole file as for write, with
+                  its line ends kept
   delete, clear   `rm -rf <dir>`, and for clear `mkdir <dir>` after it
 
 In the block of a write, edit, delete, or clear, the commands are joined with
