@@ -98,6 +98,9 @@ RUN_KEYS = {"gradle": {"args", "expect"}, "shell": {"command", "expect"}}
 EDIT_KEYS = {"file", "replace", "with"}
 EXPECT_KEYS = {"exit", "output", "no_output"}
 EXPECT_VALUES = ("pass", "fail")
+# IntelliJ language ids (read in any case) by file extension, for the `# language=<id>` comment above a file in flat output
+LANGUAGE_IDS = {"kts": "kotlin", "kt": "kotlin", "java": "java", "gradle": "groovy", "groovy": "groovy", "xml": "xml",
+                "properties": "properties", "json": "json", "yaml": "yaml", "yml": "yaml", "toml": "TOML", "sh": "Shell Script"}
 
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 VERSION_RE = re.compile(r"\d+\.\d+(\.\d+)?([-+][A-Za-z0-9.+-]+)?")   # 9.9.0, 9.8.0-rc-2, 9.9.0-20260916091910+0000
@@ -219,9 +222,10 @@ rules, and no base of its own.
 
 A comment such as # language=kotlin on the line above a file is for IntelliJ
 only, where the file's content is then highlighted in that language. It has no
-effect on a run. In flat output, one is written above each file with a known
-extension (.kts .kt .java .gradle .groovy .xml .properties .json .yaml .yml
-.sh); hand-written scenarios can have them too.
+effect on a run. In flat output, one is written above each file with one of
+these extensions, and hand-written scenarios can have them too:
+
+  """ + " ".join(f".{ext}" for ext in LANGUAGE_IDS) + """
 
 steps[]                             each step has exactly one kind: run, write, edit, delete, or clear
   name          string   optional   label; implied when absent: "Run: gradle test", "Edit: Foo.java"
@@ -428,8 +432,7 @@ Commands
                                   A remote stays a link. The comment and blank lines at the top of
                                   the file are kept; other comments are lost, and a # language=
                                   comment is written above each file with a known extension (see
-                                  setup.layout.project). Nothing but the TOML
-                                  goes to stdout.
+                                  setup.layout.project). Nothing but the TOML goes to stdout.
   zip SCENARIO [-o PATH] [--gradle VERSION]
                                   write the scenario as a zip, with no Gradle run; see Scenario zip
 
@@ -2384,9 +2387,6 @@ def _print_tail(log: Path, n: int, out) -> None:
 INLINE_WIDTH = 100   # a table whose inline line would be longer gets a section, or in a step one dotted key per entry
 FILE_TABLES = {("setup", "layout", "project"), ("steps", "write")}   # path = content tables, always a section
 BARE_KEY_RE = re.compile(r"[A-Za-z0-9_-]+")
-# IntelliJ language ids (read in any case) by file extension, for the `# language=<id>` comment above a file in flat output
-LANGUAGE_IDS = {"kts": "kotlin", "kt": "kotlin", "java": "java", "gradle": "groovy", "groovy": "groovy", "xml": "xml",
-                "properties": "properties", "json": "json", "yaml": "yaml", "yml": "yaml", "sh": "Shell Script"}
 _ESCAPES = {'"': '\\"', "\\": "\\\\", "\b": "\\b", "\t": "\\t", "\n": "\\n", "\f": "\\f", "\r": "\\r"}
 
 

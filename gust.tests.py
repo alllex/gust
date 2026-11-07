@@ -2639,7 +2639,7 @@ run.shell = "true"
         text = ('[[steps]]\nrun.shell = "true"\n[[steps]]\n[steps.write]\n"run.sh" = "echo"\n"x/y.YML" = "a: b"\n"notes.txt" = "n"\n'
                 '[setup.layout.project]\n"build.gradle.kts" = "k"\n# language=java\n"A.kt" = "k"\n"B.java" = "j"\n"build.gradle" = "g"\n'
                 '"x.groovy" = "g"\n"a.xml" = "x"\n"gradle.properties" = "p"\n"a.json" = "{}"\n"a.yaml" = "y"\n"README" = "r"\n'
-                '"a.kts.txt" = "t"\n"dir.kt/a" = "d"\n')
+                '"gradle/libs.versions.toml" = "v"\n"a.kts.txt" = "t"\n"dir.kt/a" = "d"\n')
         out = gs.flatten(text, "t")
         self.assertEqual(out, '[[steps]]\nrun.shell = "true"\n\n[[steps]]\n[steps.write]\n# language="Shell Script"\n"run.sh" = "echo"\n'
                               '# language=yaml\n"x/y.YML" = "a: b"\n"notes.txt" = "n"\n\n[setup.layout.project]\n'
@@ -2647,7 +2647,9 @@ run.shell = "true"
                               '# language=java\n"B.java" = "j"\n# language=groovy\n"build.gradle" = "g"\n'
                               '# language=groovy\n"x.groovy" = "g"\n# language=xml\n"a.xml" = "x"\n'
                               '# language=properties\n"gradle.properties" = "p"\n# language=json\n"a.json" = "{}"\n'
-                              '# language=yaml\n"a.yaml" = "y"\nREADME = "r"\n"a.kts.txt" = "t"\n"dir.kt/a" = "d"\n')   # by the key alone
+                              '# language=yaml\n"a.yaml" = "y"\nREADME = "r"\n'
+                              '# language=TOML\n"gradle/libs.versions.toml" = "v"\n"a.kts.txt" = "t"\n'
+                              '"dir.kt/a" = "d"\n')                                                       # by the key alone
         self.assertEqual(gs.flatten(text, "t"), out)                                       # the same on every run
         self.assertEqual(gs.flatten(out, "t"), out)                                        # and from its own output
         self.assertEqual(gs.to_toml({"a.kts": "v"}), '"a.kts" = "v"\n')                   # outside a table of files, no comment
