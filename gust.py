@@ -455,9 +455,13 @@ in the log file name (or "last K of M lines of <log>"), the closing one is all
 dashes. Commands are shown without the --gradle-user-home pair (or the trace
 properties of --trace). The words EXPECTED, UNEXPECTED, and ERROR go to stdout;
 a precondition failure is a single `ERROR: ...` line on stderr, with nothing on
-stdout (a usage error has the usage line before it). For stop-daemons the console has the header and a full [STOP] block
-(label, `$` line, `exit=0 in 0.2s -> stop-daemons.log`); on failure the last
-line is `ERROR: exit=N ...`, followed by result: ERROR. On success, check and
+stdout (a usage error has the usage line before it). Once the header of run or
+setup is printed, anything else gust cannot do, such as a wrapper install
+command that cannot start, is an `ERROR: ...` line on stdout and ends the run
+in result: ERROR, the out: line, and (for run) summary.json, with exit code 2.
+For stop-daemons the console has the header and a full [STOP] block (label, `$`
+line, `exit=0 in 0.2s -> stop-daemons.log`); on failure the last line is
+`ERROR: exit=N ...`, followed by result: ERROR. On success, check and
 stop-daemons have no result: line.
 
 On a terminal the words are colored, in the terminal's own palette: EXPECTED
@@ -683,8 +687,8 @@ Exit codes: 0 success, every check came out as expected; 1 failure, a check
 came out unexpected; 2 error, gust could not do something: bad input (a failed
 precondition, a malformed scenario, bad arguments), a step that could not be
 carried out (an edit whose text was not found, a write onto a directory, a
-delete of a file, a command whose project dir is gone), or a failed wrapper
-install. summary.json is written for run only, and there it is present
+delete of a file, a command whose project dir is gone), a failed wrapper
+install, or anything else after the header. summary.json is written for run only, and there it is present
 whenever the header was printed: on exit 1, and on exit 2 after the header.
 The daemon stops never change the exit code.
 """
@@ -1687,9 +1691,12 @@ def shared_home(gradle_user_home: Path | None) -> Path:
     return home
 
 
-def begin(run: Run, needed: bool) -> RunSummary:
-    """What comes before the steps, for run and setup: the remote, the Gradle choice, the layout, the header,
-    and the wrapper install. Returns the summary, with result "error" when the install failed.
+def begin(run: Run, needed: bool, then=None) -> RunSummary:
+    """For run and setup: the remote, the Gradle choice, the layout, the header, the wrapper install, and then
+    then(summary), the steps of a run. Returns the summary, with result "error" when the install failed.
+
+    Before the header, a failure raises. Once it is printed, a GustError or OSError ends the summary as an error, with
+    an ERROR: line on the console, so the run still ends in its result: and out: lines and summary.json.
     """
     scenario, out = run.scenario, run.out
     remote_info = None
@@ -1705,11 +1712,17 @@ def begin(run: Run, needed: bool) -> RunSummary:
     summary = RunSummary(scenario=scenario.name, description=scenario.description, out=str(run.out_dir),
                          project=str(run.project), gradle=run.choice.binary, gradle_version=run.choice.version,
                          gradle_args=run.gradle_args or None, gradle_user_home=str(run.user_home), remote=remote_info)
-    if run.choice.install:
-        summary.install = _install_wrapper(run)
-        if summary.install["exit_code"] != 0:                            # a failed install ends the run as an error
-            summary.result = "error"
-            summary.error = f"wrapper install failed: exit={summary.install['exit_code']} -> {INSTALL_LOG}"
+    try:
+        if run.choice.install:
+            summary.install = _install_wrapper(run)
+            if summary.install["exit_code"] != 0:                        # a failed install ends the run as an error
+                summary.result = "error"
+                summary.error = f"wrapper install failed: exit={summary.install['exit_code']} -> {INSTALL_LOG}"
+        if then is not None and summary.result != "error":               # a failed install: no step runs
+            then(summary)
+    except (GustError, OSError) as e:
+        run.error(str(e))
+        summary.result, summary.error = "error", str(e)
     return summary
 
 
@@ -1720,8 +1733,8 @@ def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
     """
     steps = run.scenario.steps
     _check_shell(run.scenario)
-    summary = begin(run, needed=stop_daemons or run.scenario.counts()["gradle"] > 0)
-    if summary.result != "error":                                        # a failed install: no step runs
+
+    def run_steps(summary: RunSummary) -> None:
         if stop_daemons:
             summary.stop_daemons = {"before": _stop_daemons(run, "[BEF]", "stop-daemons-before.log", full=False)}
         for i, step in enumerate(steps, start=1):
@@ -1732,8 +1745,10 @@ def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
                 summary.result = "failure" if result.result == "unexpected" else "error"
                 summary.error = result.error                             # None for an unexpected check
                 break
-        if stop_daemons:
-            summary.stop_daemons["after"] = _stop_daemons(run, "[AFT]", "stop-daemons-after.log", full=False)
+
+    summary = begin(run, needed=stop_daemons or run.scenario.counts()["gradle"] > 0, then=run_steps)
+    if summary.stop_daemons is not None:                                 # the steps began: after an error in them too
+        summary.stop_daemons["after"] = _stop_daemons(run, "[AFT]", "stop-daemons-after.log", full=False)
     (run.out_dir / "summary.json").write_text(summary.to_json() + "\n", encoding="utf-8", newline="")
     word = paint({"success": SUCCESS, "failure": FAILURE, "error": ERROR}[summary.result], run.color)
     print(f"result: {word} ({len(summary.steps)}/{len(steps)} steps ran)", file=run.out)
