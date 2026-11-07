@@ -1780,6 +1780,17 @@ class CliTest(GustCase):
         self.assertEqual((code, err), (gs.EXIT_OK, ""))
         self.assertEqual((self.tmp / "scenario.out" / "project" / "a.txt").read_bytes(), "caf\u00e9".encode("utf-8"))
 
+    def test_a_console_that_cannot_show_a_character_gets_an_escape(self):
+        s = self.tmp / "u.toml"
+        s.write_bytes('[[steps]]\nrun.shell = "echo \u65e5"\n'.encode("utf-8"))
+        console = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")                   # a redirected stdout on Windows
+        with contextlib.redirect_stdout(console), contextlib.redirect_stderr(io.StringIO()):
+            code = gs.main(["run", str(s), "--keep-daemons"])
+        console.flush()
+        self.assertEqual(code, gs.EXIT_OK)
+        self.assertIn(b"[1/1] Run: echo \\u65e5", console.buffer.getvalue())
+        self.assertTrue((self.tmp / "u.out" / "summary.json").is_file())
+
     def test_any_scenario_file_name(self):
         s = self.scenario_file(MINIMAL, name="loop.scenario")
         code, out, _ = self.cli("run", str(s), "--keep-daemons")

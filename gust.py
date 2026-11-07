@@ -475,7 +475,9 @@ green, UNEXPECTED bold red, ERROR red (on stderr too), SUCCESS bold, FAILURE
 yellow. With NO_COLOR set, or TERM=dumb, the console is plain; with FORCE_COLOR
 set, it is colored through a pipe too. Logs, summary.json, and the --json line
 are always plain. FORCE_COLOR is passed on to the steps as well, so a shell
-step's log can get color codes from a tool that honors it.
+step's log can get color codes from a tool that honors it. A character that
+the console's encoding cannot hold (a redirected stdout on Windows, say) is
+printed as an escape such as \\u65e5; the logs keep it as it is.
 
 With --json (run, check), the summary is printed as one JSON object on
 the last line of stdout; for run it is also in <out>/summary.json. Its keys
@@ -2560,6 +2562,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):        # a character the console cannot show is escaped, never a traceback
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     gradle_args: list[str] = []
