@@ -194,8 +194,8 @@ setup.layout                        base or remote (not both), plus the project 
                                     remote is fetched once into .gust/remotes/<host>-<path>-<sha>
                                     and reused while its HEAD is that commit. .git is not copied.
                                     In a name longer than 100 characters, <host>-<path> is cut to
-                                    a prefix plus a hash of the URL, so one URL always gets the
-                                    same dir.
+                                    a prefix plus a hash of the whole <host>/<path>, so one URL
+                                    always gets the same dir.
   project       table    optional   the project's files; see setup.layout.project
 
 setup.layout.project                the project table (becomes <out>/project)
@@ -875,13 +875,13 @@ class Remote:
     @property
     def identity(self) -> str:
         """<host>-<path>-<sha>, from the URL. Past REMOTE_NAME_MAX, <host>-<path> is cut to a prefix plus a hash of the
-        whole URL, so the same URL always maps to the same dir, and a name within the limit stays as it was."""
+        URL's whole host and path, so the same URL always maps to the same dir, and a name within the limit stays as it was."""
         host_path = re.sub(r"^[a-z+]+://", "", self.url)
         host_path = re.sub(r"\.git$", "", host_path)
         name = re.sub(r"[^A-Za-z0-9._-]+", "-", host_path).strip("-")
         if len(name) + 1 + len(self.sha) > REMOTE_NAME_MAX:
-            digest = hashlib.sha256(self.url.encode()).hexdigest()[:12]
-            prefix = name[:REMOTE_NAME_MAX - len(self.sha) - len(digest) - 2].rstrip("-.")   # no trailing dot, for Windows
+            digest = hashlib.sha256(host_path.encode()).hexdigest()[:12]       # as the name: no scheme, no .git
+            prefix = name[:REMOTE_NAME_MAX - len(self.sha) - len(digest) - 2].rstrip("-.")   # no -. or -- join with the digest
             name = f"{prefix}-{digest}" if prefix else digest
         return name + "-" + self.sha
 
