@@ -662,7 +662,8 @@ and one `ERROR: ...` line on stderr; a load error is prefixed with the
 scenario's path (or stdin).
 
   - Python 3.11 or newer.
-  - The scenario parses and every key is known; `name`, if given, is a slug
+  - The scenario, and a layout file, are UTF-8 text (from stdin too); the
+    scenario parses and every key is known; `name`, if given, is a slug
     ([A-Za-z0-9][A-Za-z0-9._-]*); every `edit` file is in the project table,
     the remote checkout, the project dir in place, or an earlier write step,
     and not under an earlier delete or clear; no `delete` or `clear` path is
@@ -995,7 +996,7 @@ def _load_base(base: str, base_dir: Path | None) -> dict[str, str]:
     if not path.is_file():
         raise GustError(f"setup.layout.base: no such file {path}")
     try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        data = tomllib.loads(_read_utf8(path, f"setup.layout.base: {path}"))
     except tomllib.TOMLDecodeError as e:
         raise GustError(f"setup.layout.base: {path} is not valid TOML: {e}") from e
     if "base" in data:
@@ -2612,11 +2613,24 @@ def read_source(args) -> tuple[str, str, dict]:
     if str(args.scenario) == "-":
         if sys.stdin.isatty():
             raise GustError("SCENARIO is '-' but nothing is piped on stdin")
-        return sys.stdin.read(), "stdin", {"base_dir": Path.cwd()}
+        text = sys.stdin.read()
+        try:
+            text.encode("utf-8")                       # a byte that was not UTF-8 is a lone surrogate here
+        except UnicodeEncodeError:
+            raise GustError("stdin is not UTF-8 text") from None
+        return text, "stdin", {"base_dir": Path.cwd()}
     if not args.scenario.is_file():
         raise GustError(f"scenario file not found: {args.scenario}")
-    return (args.scenario.read_text(encoding="utf-8"), str(args.scenario),
+    return (_read_utf8(args.scenario, str(args.scenario)), str(args.scenario),
             {"base_dir": args.scenario.resolve().parent, "default_name": args.scenario.stem})
+
+
+def _read_utf8(path: Path, label: str) -> str:
+    """The file's text; GustError, with label, when it is not UTF-8 (Latin-1, say, or UTF-16 from PowerShell 5)."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise GustError(f"{label} is not UTF-8 text") from None
 
 
 def _load_named(text: str, source: str, **kwargs) -> Scenario:

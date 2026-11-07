@@ -1755,6 +1755,17 @@ class CliTest(GustCase):
         self.assertEqual((code, err), (gs.EXIT_OK, ""))
         self.assertIn("usage: gust.py", out)                                          # the general help, not a "None runs no Gradle step" error
 
+    def test_a_scenario_that_is_not_utf8_is_refused(self):
+        text = '[[steps]]\nwrite."a.txt" = "caf\u00e9"\n'
+        for encoding in ("latin-1", "utf-16"):                                          # utf-16: PowerShell 5's >
+            path = self.tmp / f"{encoding}.toml"
+            path.write_bytes(text.encode(encoding))
+            for command in ("check", "run", "zip", "flat"):
+                with self.subTest(encoding=encoding, command=command):
+                    self.assertEqual(self.cli(command, str(path)), (gs.EXIT_ERROR, "", f"ERROR: {path} is not UTF-8 text\n"))
+        code, out, err = self.cli("run", "-", stdin=text.replace("\u00e9", "\udce9"))   # a bad byte, as stdin passes it on
+        self.assertEqual((code, out, err), (gs.EXIT_ERROR, "", "ERROR: stdin is not UTF-8 text\n"))
+
     def test_any_scenario_file_name(self):
         s = self.scenario_file(MINIMAL, name="loop.scenario")
         code, out, _ = self.cli("run", str(s), "--keep-daemons")
