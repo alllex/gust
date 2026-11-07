@@ -1752,7 +1752,7 @@ def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
         trace=trace_rel if traced else None, command=shown,
     )
     n = len(step.expect.output) + len(step.expect.no_output)       # the output checks
-    checks_note = f", {n} output check{'s' if n != 1 else ''}" if n else ""
+    checks_note = f", {_count(n, 'output check')}" if n else ""
     word = paint(UNEXPECTED if unexpected else EXPECTED, run.color)
     print(f"{word}: exit={exit_code}{checks_note} in {duration:.1f}s -> {log_rel}" + (f", {trace_rel}" if traced else ""),
           file=run.out)
@@ -1761,6 +1761,11 @@ def _run_command(run: Run, step: RunStep, index: int) -> StepResult:
     if unexpected and not run.show_output:
         _print_tail(run.out_dir / log_rel, run.tail, run.out)
     return result
+
+
+def _count(n: int, noun: str) -> str:
+    """`1 file`, `2 files`."""
+    return f"{n} {noun}{'s' if n != 1 else ''}"
 
 
 def cannot_run(shown: str, e: OSError) -> str:
@@ -1776,16 +1781,18 @@ def _change_files(run: Run, step: WriteStep | EditStep | DeleteStep, index: int)
             files = list(step.files)
             for rel, content in step.files.items():
                 _write_file(run.project / rel, content)
-            note = f"{len(files)} file{'s' if len(files) != 1 else ''} written"
+            note = f"{_count(len(files), 'file')} written"
         elif isinstance(step, EditStep):
             files = list(dict.fromkeys(e.file for e in step.edits))
             for edit in step.edits:
                 _apply_edit(run.project, edit)
-            note = f"{len(files)} file{'s' if len(files) != 1 else ''} edited"
+            note = f"{_count(len(files), 'file')} edited"
         else:
             files = [step.dir]
             done = _delete_dir(run, step)
-            files, note = ([] if done == "was not there" else files), f"{step.dir} {done}"
+            note = f"{step.dir} {done}"
+            if done == "was not there":
+                files = []
     except StepError as e:
         message = str(e)
     except OSError as e:
