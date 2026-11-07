@@ -2352,7 +2352,8 @@ def _sh_edit(rel: str, before: str, after: str) -> list[Command]:
     anew where a diff will not do: a control character such as a carriage return, whitespace in the path, or a file
     named -, which BSD patch reads as stdout."""
     if before == after:
-        return [([f"# {_visible(rel).replace(chr(10), '\\n')} stays as it is: its text is replaced with the same text"], None)]
+        name = _visible(rel).replace("\n", "\\n")             # on one line, so no part of the name runs
+        return [([f"# {name} stays as it is: its text is replaced with the same text"], None)]
     if _CONTROL_RE.search(before + after) or re.search(r"\s", rel) or rel == "-":
         return [(["# the whole file, written anew instead of a diff for patch"], None), _sh_write(rel, after)]
     diff = []
