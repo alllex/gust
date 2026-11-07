@@ -2301,7 +2301,9 @@ run.shell = "true"
     def test_a_comment_with_a_unicode_line_separator_is_kept(self):
         for sep in ("\u2028", "\u2029", "\u0085"):                                    # line breaks for Python, not for TOML
             with self.subTest(sep=repr(sep)):
-                code, out, err = self.flat(f'# a{sep}b\n[[steps]]\nrun.shell = "true"\n')
+                path = self.tmp / "sep.toml"
+                path.write_bytes(f'# a{sep}b\n[[steps]]\nrun.shell = "true"\n'.encode("utf-8"))   # UTF-8 on Windows too
+                code, out, err = self.cli("flat", str(path))
                 self.assertEqual((code, err), (gs.EXIT_OK, ""))
                 self.assertEqual(out, f'# a{sep}b\n[[steps]]\nrun.shell = "true"\n')
 
