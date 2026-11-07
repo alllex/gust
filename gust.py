@@ -1498,10 +1498,12 @@ def _apply_edit(project: Path, edit: Edit) -> None:
 
 def _edited_text(text: str, edit: Edit) -> str:
     """The text with the edit applied: a line end in the replaced text matches any kind, and in a file with one kind,
-    a bare \n in the replacement is written as that kind. StepError unless the replaced text occurs exactly once."""
+    a bare \n in the replacement is written as that kind. StepError unless the replaced text occurs exactly once,
+    overlapping occurrences counted."""
     lines = re.split(r"\r\n|\r|\n", edit.replace)
-    pattern = re.compile("(?>\r\n|\r|\n)".join(map(re.escape, lines)))     # a line end matches any kind; atomic: CRLF is one
-    n = len(pattern.findall(text))
+    body = "(?!(?<=\r)\n)" + "(?>\r\n|\r|\n)".join(map(re.escape, lines))    # a line end matches any kind; CRLF is one, never split
+    pattern = re.compile(body)
+    n = len(re.findall(f"(?={body})", text))                     # a lookahead finds the overlapping ones too
     if n != 1:
         raise StepError(f"{edit.replace!r} occurs {n} times in {edit.file}; an edit needs exactly one")
     with_ = edit.with_

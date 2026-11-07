@@ -1028,6 +1028,29 @@ class SetupTest(GustCase):
             gs._apply_edit(self.tmp, gs.Edit(file="f.txt", replace="a", with_="x"))
         self.assertEqual(path.read_bytes(), b"a\xff\r\n")
 
+    def test_edit_counts_overlapping_occurrences(self):
+        path = self.tmp / "f.txt"
+        for before, replace, n in [
+            (b"1.0.0.0", "0.0", 2),
+            (b"}\n}\n}\n", "}\n}", 2),
+            (b"}\r\n}\r\n}\r\n", "}\n}", 2),                                         # with a line end of any kind
+            (b"}\r}\r}\r", "}\n}", 2),
+            (b"aaa", "aa", 2),
+        ]:
+            path.write_bytes(before)
+            with self.assertRaises(gs.StepError) as cm:
+                gs._apply_edit(self.tmp, gs.Edit(file="f.txt", replace=replace, with_="X"))
+            self.assertEqual(str(cm.exception), f"{replace!r} occurs {n} times in f.txt; an edit needs exactly one")
+            self.assertEqual(path.read_bytes(), before)
+        for before, replace, after in [
+            (b"1.0.0", "0.0", b"1.X"),
+            (b"a\r\nb\r\n", "\nb", b"aX\r\n"),                                          # a CRLF is one line end: no second start at its LF
+            (b"a\r\n\r\nb", "\n\n", b"aXb"),
+        ]:
+            path.write_bytes(before)
+            gs._apply_edit(self.tmp, gs.Edit(file="f.txt", replace=replace, with_="X"))
+            self.assertEqual(path.read_bytes(), after, (before, replace))
+
     def delete_dir(self, kind, rel, **kw):
         """_delete_dir in <out>/project, laid out empty on the first call; the error message, or what was done."""
         run = self.make_run(gs.load_scenario(MINIMAL), self.out_dir, **kw)
