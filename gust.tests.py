@@ -670,6 +670,15 @@ class LayoutRemoteTest(GustCase):
                 self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
                 self.assertIn("'missing.txt' is not in the layout", err)
 
+    def test_a_cached_remote_prints_nothing_before_a_failed_gradle_check(self):
+        s = self.write(f'setup.layout.remote = "{self.url}#{self.sha}"')
+        self.assertEqual(self.cli("run", str(s), "--keep-daemons")[0], gs.EXIT_OK)       # cached now
+        for command in ("check", "run"):
+            with self.subTest(command=command):
+                code, out, err = self.cli(command, str(s), "--gradle", "nosuch")
+                self.assertEqual((code, out), (gs.EXIT_ERROR, ""))                     # the remote lines come with the header
+                self.assertIn("--gradle 'nosuch': not found on PATH", err)
+
     def test_check_takes_a_project_binary_from_an_uncached_remote(self):
         s = self.write(f'setup.layout.remote = "{self.url}#{self.sha}"', '[[steps]]\nrun.gradle = "help"\n')
         code, out, err = self.cli("check", str(s), "--gradle", WRAPPER)              # in the commit, not fetched yet

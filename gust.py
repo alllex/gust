@@ -428,9 +428,9 @@ Console
 
 Once the preconditions pass, a header is printed: scenario:, out:, project:
 (in place only), home:, gradle:. With a remote, the remote: and checkout: lines
-come first: ahead of a fetch, as its progress, or for a cached checkout once its
-HEAD, its subdirectory, and the file flow are checked, so a failed check leaves
-nothing on stdout. Then come blocks, each a label line and a result line:
+come first. A fetch prints them ahead of itself, as its progress; otherwise they
+are printed with the header, once every precondition has passed. Then come
+blocks, each a label line and a result line:
 
   [WRP] Install Gradle wrapper 9.7.1     a `$ <command>` line, the wrapper task's output with
                                          --show-output, then `exit=0 in 3.1s -> install-wrapper.log`.
@@ -461,7 +461,8 @@ in the log file name (or "last K of M lines of <log>"), the closing one is all
 dashes. Commands are shown without the --gradle-user-home pair (or the trace
 properties of --trace). The words EXPECTED, UNEXPECTED, and ERROR go to stdout;
 a precondition failure is a single `ERROR: ...` line on stderr, with nothing on
-stdout (a usage error has the usage line before it). Once the header of run or
+stdout apart from a fetch's progress lines (a usage error has the usage line
+before it). Once the header of run or
 setup is printed, anything else gust cannot do, such as a wrapper install
 command that cannot start, is an `ERROR: ...` line on stdout and ends the run
 in result: ERROR, the out: line, and (for run) summary.json, with exit code 2.
@@ -667,8 +668,8 @@ Preconditions
 =============
 
 These are checked before the out dir is touched. Any failure means exit code 2
-and one `ERROR: ...` line on stderr; a load error is prefixed with the
-scenario's path (or stdin).
+and one `ERROR: ...` line on stderr, with nothing on stdout unless a remote was
+fetched first; a load error is prefixed with the scenario's path (or stdin).
 
   - Python 3.11 or newer.
   - The scenario, and a layout file, are UTF-8 text (from stdin too); the
@@ -1247,16 +1248,14 @@ def fetch_remote(scenario: Scenario, out=None, may_fetch: bool = True) -> dict |
     flow against the checkout.
 
     Returns the summary's remote table {"link", "checkout", "fetched"}, or None without a remote, or (with may_fetch
-    False, for check) for a remote not cached yet. With out, the remote: and checkout: lines are printed there: for a
-    cached checkout once every check has passed, for a fetch ahead of it as progress.
+    False, for check) for a remote not cached yet. A fetch prints its remote: and checkout: lines to out, if given,
+    ahead of it as progress; for any other case print_remote prints them with the header.
     """
     remote = scenario.remote
     if remote is None:
         return None
     target = remote.dir
     if not may_fetch and not (target / ".git").exists():
-        if out is not None:
-            print(f"remote:   {remote.link} (not cached; fetched on run)", file=out)
         return None
     if shutil.which("git") is None:
         raise GustError("setup.layout.remote needs git on PATH")
@@ -1288,9 +1287,18 @@ def fetch_remote(scenario: Scenario, out=None, may_fetch: bool = True) -> dict |
             raise
         fetched = True
     check_file_flow(scenario)
-    if out is not None and not fetched:
-        print(f"remote:   {remote.link}\ncheckout: {target} (cached)", file=out)
     return {"link": remote.link, "checkout": str(target), "fetched": fetched}
+
+
+def print_remote(scenario: Scenario, info: dict | None, out) -> None:
+    """The remote: and checkout: lines, ahead of the header, for a remote that was not fetched just now: cached, or for
+    check (info None) not cached yet."""
+    if scenario.remote is None or info is not None and info["fetched"]:
+        return                                          # no remote, or its lines came ahead of the fetch
+    if info is None:
+        print(f"remote:   {scenario.remote.link} (not cached; fetched on run)", file=out)
+    else:
+        print(f"remote:   {scenario.remote.link}\ncheckout: {info['checkout']} (cached)", file=out)
 
 
 def _git(cwd: Path, *args: str, check: bool = True, input: bytes | None = None) -> bytes | None:
@@ -1744,6 +1752,7 @@ def begin(run: Run, needed: bool, then=None) -> RunSummary:
     root = scenario.remote.source if scenario.remote else scenario.project
     run.choice = settle_gradle(scenario, run.gradle, root, run.user_home, needed=needed, may_install=True)
     lay_out(scenario, run.out_dir)
+    print_remote(scenario, remote_info, out)
     print_header(scenario, run.out_dir, run.user_home, run.choice, out)
     summary = RunSummary(scenario=scenario.name, description=scenario.description, out=str(run.out_dir),
                          project=str(run.project), gradle=run.choice.binary, gradle_version=run.choice.version,
@@ -2672,12 +2681,14 @@ def _load_named(text: str, source: str, **kwargs) -> Scenario:
 def _cli_check(scenario: Scenario, gradle: str | None, user_home: Path, as_json: bool) -> int:
     """Validate the scenario and settle the Gradle binary as run would, without setting anything up."""
     remote, root = scenario.remote, scenario.project
-    cached = fetch_remote(scenario, sys.stdout, may_fetch=False) is not None
+    remote_info = fetch_remote(scenario, may_fetch=False)
+    cached = remote_info is not None
     if cached:
         root = remote.source
     _check_shell(scenario)
     counts = scenario.counts()
     choice = settle_gradle(scenario, gradle, root, user_home, needed=counts["gradle"] > 0, may_install=True)
+    print_remote(scenario, remote_info, sys.stdout)
     print_header(scenario, None, user_home, choice, sys.stdout, description=True)
     print(f"steps: {len(scenario.steps)} ({', '.join(f'{n} {kind}' for kind, n in counts.items())})")
     if as_json:
