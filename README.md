@@ -126,7 +126,7 @@ The Gradle the steps run with is the first of:
 
 1. `--gradle <bin>`: a distribution or a local build, as a name on PATH or in
    the working directory, or as a path. A value with a `/` is always a path.
-2. `--gradle 9.7.1`: a version, when the value is not a binary on PATH or in
+2. `--gradle 9.9.0`: a version, when the value is not a binary on PATH or in
    the working directory. A wrapper for it is installed into the project first,
    with `gradle` from PATH, so a local Gradle installation is assumed and the
    layout needs a settings file.
@@ -203,16 +203,17 @@ gust zip loop.toml -o ~/repro-39193.zip   # unzips to repro-39193/
 The zip holds the project's starting state, as `setup` lays it out, and a
 `SCENARIO.md`: the scenario written out as steps to run by hand. It has the
 scenario's name, description, and Gradle version, and each step as a shell
-snippet: `gradle <args>` for a Gradle step, with the expectations as comments,
-a heredoc for a write, a diff for `patch -p1` for an edit, and `rm -rf` for a
-delete or clear. The commands of a file step are joined with `&&`, so its block
-stops at the first failure. The wrapper is left out, and so is the scenario
-file. In a shell step, `./gradlew` becomes `gradle`, and a step that still uses
-the wrapper, such as `test -x gradlew`, is refused.
+snippet: `gradle <args>` for a Gradle step, a heredoc for a write, a diff for
+`patch -p1` for an edit, and `rm -rf` for a delete or clear. A snippet holds
+commands only, so it can be pasted into sh, bash, or zsh; what to expect from it
+is in the text above it. The commands of a file step are joined with `&&`, so
+its block stops at the first failure. The wrapper is left out, and so is the
+scenario file. In a shell step, `./gradlew` becomes `gradle`, and a step that
+still uses the wrapper, such as `test -x gradlew`, is refused.
 
 - No Gradle runs, and nothing is installed. The Gradle version comes from
   `setup.gradle`, or from the wrapper's properties when the steps run with the
-  project's own wrapper; pass `--gradle 9.7.1` to name another.
+  project's own wrapper; pass `--gradle 9.9.0` to name another.
 - The zip's path is the only line on stdout. An existing zip is never replaced,
   and a scenario with `setup.project` is refused, since there is nothing to lay
   out.
@@ -228,9 +229,11 @@ the wrapper, such as `test -x gradlew`, is refused.
 | `1` | failure: a check came out unexpected |
 | `2` | error: gust could not do something: bad input (a failed precondition, a malformed scenario, bad arguments), a step that could not be carried out, or a failed wrapper install |
 
-The preconditions (Python version, scenario shape, Gradle binary, git) are all
-checked before the out dir is touched. `summary.json` is written for `gust run`
-only, and there it is present whenever the header was printed.
+The preconditions (Python version, a scenario in UTF-8 and of the right shape,
+Gradle binary, git) are all checked before the out dir is touched.
+`summary.json` is written for `gust run` only, and there it is present whenever
+the header was printed: past that point, anything gust cannot do ends the run
+as an error.
 
 On a terminal, the console's verdict words are colored in the terminal's own
 palette: `EXPECTED` green, `UNEXPECTED` bold red, `ERROR` red (on stderr too),

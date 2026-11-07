@@ -61,7 +61,7 @@ def main():
     gust_cli(0, "run", "in-place-tidy.toml", "--keep-daemons")              # Gradle's real build dir, cleared, then deleted
     if (project / "build").exists() or not (project / "src").is_dir():
         sys.exit("in-place-tidy.toml: build must be gone from the project dir, and nothing else")
-    gust_cli(0, "run", "wrapper.toml", "--gradle", "9.7.1")                # the wrapper install and gradlew.bat
+    gust_cli(0, "run", "wrapper.toml", "--gradle", "9.8.2")                # the wrapper install and gradlew.bat, not the `current` on PATH
     gust_cli(0, "run", "shell.toml")
     # a daemon left running, then a setup over its project
     gust_cli(0, "setup", "cycle.toml")
