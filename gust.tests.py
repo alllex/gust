@@ -235,14 +235,15 @@ with = "Y"
         self.assertEqual(gs.load_scenario('[[steps]]\ndelete = \'a\\b/c\'').steps[0].dir, "a/b/c")   # \ separates everywhere; unknown is fine
         S = 'name = "x"\n[[steps]]\n'
         for kind in ("delete", "clear"):                                                 # refused on every system, not only where they are roots
-            for path in ("/abs", "C:\\abs", "C:/abs", "C:rel", "\\abs", "\\\\host\\share\\x", "//host/share/x", "~", "~/x", "~user/x",
+            for path in ("/abs", "C:\\abs", "C:/abs", "C:rel", "\\abs", "\\\\host\\share\\x", "//host/share/x",
                          "..", "../x", "a/../b", "a/..", "a\\..\\b", ""):
-                self.assert_rejects(S + f"{kind} = '{path}'",
-                                    f"steps[1].{kind}: must be a path relative to the project dir, without '..' or a leading '~', got {path!r}")
+                self.assert_rejects(S + f"{kind} = '{path}'", f"steps[1].{kind}: path must be relative")
+            for path in ("~", "~/x", "~user/x"):
+                self.assert_rejects(S + f"{kind} = '{path}'", f"steps[1].{kind}: a leading '~' is refused, as a shell reads it as a home dir")
             for path in ("...", ".. ", "build.", "a/b /c", ".. /x"):                     # ".. " is ".." on Windows
-                self.assert_rejects(S + f"{kind} = '{path}'", f"steps[1].{kind}: no name in the path may end in a dot or a space")
+                self.assert_rejects(S + f"{kind} = '{path}'", "is not a valid name on Windows: it ends in a dot or a space")
             for path in (".git", ".git/objects", "sub/.git", "sub/.GIT", ".Git\\hooks"):
-                self.assert_rejects(S + f"{kind} = '{path}'", f"steps[1].{kind}: a git repository's .git is never deleted or cleared, got {path!r}")
+                self.assert_rejects(S + f"{kind} = '{path}'", f"steps[1].{kind}: a git repository's .git is never changed by a scenario, got {path!r}")
             for path in (".", "./", ".\\", "./."):
                 self.assert_rejects(S + f"{kind} = '{path}'", f"steps[1].{kind}: {path!r} is the project dir itself; name a directory in it")
             self.assert_rejects(S + f'{kind} = "a\\u0000b"', f"steps[1].{kind}: path must not contain a NUL character")
@@ -426,12 +427,13 @@ run.shell = "true"
     def test_paths_that_differ_in_case_only_are_refused(self):
         L = '[setup.layout.project]\n"a/b.txt" = "1"\n"src/main/x.txt" = "2"\n'
         for more, message in (
-                ('"A/b.txt" = "3"\n[[steps]]\nrun.shell = "x"', "setup.layout.project: 'A' and 'a' differ in case only, so they are one"),
-                ('"Src/main/y.txt" = "3"\n[[steps]]\nrun.shell = "x"', "setup.layout.project: 'Src' and 'src' differ in case only"),
-                ('[[steps]]\nwrite."A/B.txt" = "3"', "steps[1].write: 'A' and 'a' differ in case only"),
-                ('[[steps]]\nwrite."a/B.txt" = "3"', "steps[1].write: 'a/B.txt' and 'a/b.txt' differ in case only"),
-                ('[[steps]]\ndelete = "SRC/main"', "steps[1].delete: 'SRC' and 'src' differ in case only"),
-                ('[[steps]]\nedit = [{ file = "a/B.txt", replace = "1", with = "2" }]', "steps[1].edit[1].file: 'a/B.txt' and 'a/b.txt' differ")):
+                ('"A/b.txt" = "3"\n[[steps]]\nrun.shell = "x"', "setup.layout.project: 'A' and 'a' differ in case or Unicode form only, so they are one"),
+                ('"Src/main/y.txt" = "3"\n[[steps]]\nrun.shell = "x"', "setup.layout.project: 'Src' and 'src' differ in case or Unicode form only"),
+                ('[[steps]]\nwrite."A/B.txt" = "3"', "steps[1].write: 'A' and 'a' differ in case or Unicode form only"),
+                ('[[steps]]\nwrite."a/B.txt" = "3"', "steps[1].write: 'a/B.txt' and 'a/b.txt' differ in case or Unicode form only"),
+                ('[[steps]]\ndelete = "SRC/main"', "steps[1].delete: 'SRC' and 'src' differ in case or Unicode form only"),
+                ('[[steps]]\nedit = [{ file = "a/B.txt", replace = "1", with = "2" }]', "steps[1].edit[1].file: 'a/B.txt' and 'a/b.txt' differ"),
+                ('[[steps]]\nclear = "gen/out"\n[[steps]]\nwrite."GEN/x.txt" = "3"', "steps[2].write: 'GEN' and 'gen' differ")):
             with self.subTest(more=more):
                 self.assert_rejects(L + more, message)
         gs.load_scenario(L + '[[steps]]\ndelete = "a"\n[[steps]]\nwrite."A/b.txt" = "3"')   # once a is gone, A is no variant
@@ -456,6 +458,28 @@ run.shell = "true"
                                     f"setup.layout.project.{path!r}: {name!r} is not a valid name on Windows: {why}")
                 self.assert_rejects(f"[[steps]]\ndelete = {key}", f"steps[1].delete: ")
         gs.load_scenario("[setup.layout.project]\n'console.txt' = 'x'\n'.hidden' = 'x'\n'a b/c.txt' = 'x'\n[[steps]]\nrun.shell = 'x'")
+
+    def test_two_unicode_forms_of_one_name_are_refused(self):
+        nfc, nfd = "caf\u00e9.txt", "cafe\u0301.txt"                                    # one name on macOS
+        self.assert_rejects(f'[setup.layout.project]\n"{nfc}" = "1"\n"{nfd}" = "2"\n[[steps]]\nrun.shell = "x"',
+                            f"setup.layout.project: {nfd!r} and {nfc!r} differ in case or Unicode form only")
+        self.assert_rejects(f'[setup.layout.project]\n"{nfc}" = "1"\n[[steps]]\nwrite."CAFE\u0301.TXT" = "2"', "steps[1].write: ")
+
+    def test_a_drive_is_named_in_the_refusal(self):
+        for path, drive in (("a:b", "a:"), ("C:y.txt", "C:"), ("C:\\y.txt", "C:")):
+            self.assert_rejects(f"[setup.layout.project]\n'{path}' = 'x'\n[[steps]]\nrun.shell = 'x'",
+                                f"setup.layout.project.{path!r}: path must be relative, but {drive!r} is a drive on Windows")
+
+    def test_a_file_path_that_ends_in_a_separator_is_refused(self):
+        for path in ("src/", "src\\"):
+            self.assert_rejects(f"[[steps]]\nwrite = {{ '{path}' = 'x' }}", f"steps[1].write.{path!r}: {path!r} ends in a separator; name a file")
+        self.assertEqual(gs.load_scenario('[[steps]]\nclear = "build/"').steps[0].dir, "build")       # a dir may
+
+    def test_dot_git_is_refused_in_every_file_path(self):
+        for step in ('[setup.layout.project]\n".git/config" = "x"\n[[steps]]\nrun.shell = "x"', '[[steps]]\nwrite."sub/.GIT/hooks/pre-commit" = "x"',
+                     '[[steps]]\nedit = [{ file = ".git/config", replace = "a", with = "b" }]'):
+            self.assert_rejects(step, "a git repository's .git is never changed by a scenario, got ")
+        gs.load_scenario('[[steps]]\nwrite.".github/x.git" = "x"')                         # only a name .git itself
 
 
 class LayoutBaseTest(GustCase):
@@ -2190,11 +2214,21 @@ class InPlaceTest(GustCase):
         self.assert_rejects('[[steps]]\nwrite."a.txt/x" = ""\n', f"steps[1].write: 'a.txt/x' conflicts with 'a.txt' ({self.proj}); one is a directory of the other",
                             project=self.proj)
 
+    def test_case_variants_of_files_in_place_are_refused(self):
+        (self.proj / "src").mkdir()
+        (self.proj / "src" / "a.txt").write_text("a\n")
+        for step, message in (('write."SRC/b.txt" = "b"', "steps[1].write: 'SRC' and 'src'"),
+                              ('write."A.TXT" = "b"', "steps[1].write: 'A.TXT' and 'a.txt'"),
+                              ('edit = [{ file = "src/A.txt", replace = "a", with = "b" }]', "steps[1].edit[1].file: 'src/A.txt' and 'src/a.txt'")):
+            self.assert_rejects(f"[[steps]]\n{step}\n", f"{message} ({self.proj}) differ in case or Unicode form only, so they are one path on "
+                                                      f"macOS or Windows", project=self.proj)
+        gs.load_scenario('[[steps]]\nwrite."src/b.txt" = "b"\n', project=self.proj)
+
     def test_delete_and_clear_in_place(self):
         (self.proj / "build" / "libs").mkdir(parents=True)
         (self.proj / "build" / "libs" / "app.jar").write_text("")
         (self.proj / ".git" / "objects").mkdir(parents=True)
-        self.assert_rejects('[[steps]]\nclear = ".GIT/objects"\n', "steps[1].clear: a git repository's .git is never deleted or cleared, "
+        self.assert_rejects('[[steps]]\nclear = ".GIT/objects"\n', "steps[1].clear: a git repository's .git is never changed by a scenario, "
                                                                   "got '.GIT/objects'", project=self.proj)
         self.assert_rejects('[[steps]]\ndelete = "a.txt"\n', f"steps[1].delete: 'a.txt' is a file ({self.proj}), not a directory", project=self.proj)
         out_dir = self.proj / "s.out"                                                   # the out dir and .gust inside the project
@@ -2828,12 +2862,6 @@ rm -rf build
             self.run_snippets(readme, project)
             self.assertEqual([(project / f).read_bytes() for f in ("a.txt", "b.txt")], [b"x\n++ y", b"keep\n"])
 
-    def test_no_op_edit_of_a_name_with_a_newline_runs_nothing(self):
-        text = '[setup.layout.project]\n"x\\ntouch pwned" = "x\\n"\n[[steps]]\nedit = [{ file = "x\\ntouch pwned", replace = "x", with = "x" }]\n'
-        with self.assertRaises(gs.GustError) as cm:          # no newline in a file name on Windows, so on no system
-            self.readme(text)
-        self.assertIn("is not a valid name on Windows: it has the character '\\n'", str(cm.exception))
-
     def test_edit_of_a_file_named_dash(self):
         text = '[setup.layout.project]\n"-" = "one\\n"\n[[steps]]\nedit = [{ file = "-", replace = "one", with = "two" }]\n'
         readme = self.readme(text)
@@ -2907,11 +2935,25 @@ rm -rf build
         self.assertEqual(list(entries), ["bs/", "bs/SCENARIO.md", "bs/a/", "bs/a/b.txt"])
         self.assertIn("mkdir -p c &&\ncat > c/d.txt", entries["bs/SCENARIO.md"][2].decode())
 
+    def test_case_variants_of_remote_files_are_refused(self):
+        link = self.remote({"readme.md": ("100644", b"r\n"), "src/a.txt": ("100644", b"a\n")})
+        for i, (more, message) in enumerate((
+                ('[setup.layout.project]\n"README.md" = "x"\n', "setup.layout.project: 'README.md' and 'readme.md'"),
+                ('[[steps]]\nwrite."SRC/b.txt" = "b"\n', "steps[1].write: 'SRC' and 'src'"),
+                ('[[steps]]\ndelete = "Src"\n', "steps[1].delete: 'Src' and 'src'"))):
+            scenario = self.scenario_file(f'setup.layout.remote = "{link}"\n{more}[[steps]]\nrun.gradle = "help"\n', f"v{i}.toml")
+            self.assertEqual(self.cli("zip", str(scenario)), (gs.EXIT_ERROR, "", f"ERROR: {message} (setup.layout.remote) differ in case or "
+                                                                               f"Unicode form only, so they are one path on macOS or Windows\n"))
+        scenario = self.scenario_file(f'setup.layout.remote = "{link}"\n[[steps]]\ndelete = "src"\n[[steps]]\nwrite."SRC/b.txt" = "b"\n'
+                                      '[[steps]]\nrun.gradle = "help"\n', "gone.toml")
+        self.assertEqual(self.cli("zip", str(scenario))[0], gs.EXIT_OK)                   # once src is gone, SRC is no variant
+
     def test_remote_names_get_the_windows_checks_of_a_layout(self):
         env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
         for i, (name, message) in enumerate((("a\\b.txt", "on Windows a backslash is a separator, so the name is another path there"),
                                              ("x.", "'x.' is not a valid name on Windows: it ends in a dot or a space"),
-                                             ("aux.txt", "'aux.txt' is not a valid name on Windows: it is a device name there"))):
+                                             ("aux.txt", "'aux.txt' is not a valid name on Windows: it is a device name there"),
+                                             ("a:b", "path must be relative, but 'a:' is a drive on Windows"))):
             craft = self.tmp / f"craft{i}"
 
             def git(*args, data=None):
