@@ -590,9 +590,10 @@ a `### N. <step name>` heading with its own sh block:
   write           a `cat > <file> <<'EOF'` heredoc (EOF2, EOF3, ... when a line
                   of the file is EOF), with `mkdir -p` for a new directory. A file
                   without a final newline, or with a carriage return or other
-                  control character, is written with printf, and so is one with
-                  a line where dash before 0.5.13 would drop a byte: a line that
-                  starts with a part of the delimiter, then a non-ASCII character
+                  control character, is written with printf. So is a file with
+                  a line that starts with E, EO, or EOF and then a non-ASCII
+                  character, as dash before 0.5.13 drops a byte from such a
+                  line in a heredoc
   edit            a unified diff in a `patch -p1` heredoc; for a file with a
                   carriage return, whitespace in its path, or the name -, the
                   whole file as for write, with its line ends kept
@@ -600,9 +601,10 @@ a `### N. <step name>` heading with its own sh block:
 
 In the block of a write, edit, delete, or clear, the commands are joined with
 &&, so the block stops at its first failure, such as a diff that does not
-apply. The block of a run step is a plain command, since it may be expected to
-fail. A fence (``` or ~~~) at the start of a line of the description is
-escaped, so the rest of SCENARIO.md stays as it is.
+apply. The block's comments come before the chain, since in an interactive zsh
+a comment inside it would end it. The block of a run step is a plain command,
+since it may be expected to fail. A fence (``` or ~~~) or a < at the start of a
+line of the description is escaped, so the rest of SCENARIO.md stays as it is.
 
 For the same scenario, SCENARIO.md is the same, byte for byte, on every
 machine, and so is the zip wherever Python's zlib is the same: there is no gust
@@ -617,7 +619,8 @@ are refused:
     is no name of the form [A-Za-z0-9][A-Za-z0-9._-]*, as the top folder
   - setup.project, with nothing to lay out, and a binary for --gradle
   - an edit that cannot be applied, and an edit of a wrapper file
-  - a SCENARIO.md in the project, or a step that writes one
+  - a SCENARIO.md in the project, or a write, edit, delete, or clear of it, in
+    any case (scenario.md too, as on macOS and Windows)
   - a name in the remote commit that a layout could not have, such as one
     with a .. in it
   - a shell step that uses the wrapper once ./gradlew is read as gradle, such
@@ -2163,7 +2166,8 @@ def _check_link(rel: str, target: bytes) -> None:
 
 
 def _is_scenario_md(rel: str) -> bool:
-    return rel == SCENARIO_MD or rel.startswith(SCENARIO_MD + "/")
+    """Whether rel is SCENARIO.md or under it, in any case, as on the file systems of macOS and Windows."""
+    return rel.split("/")[0].casefold() == SCENARIO_MD.casefold()
 
 
 def _is_wrapper(rel: str) -> bool:
@@ -2220,7 +2224,7 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
     """
     out = [f"# {_visible(scenario.name)}", ""]
     if scenario.description:                                 # a fence in it would swallow the rest: escaped
-        out += [re.sub(r"^( {0,3})([`~]{3})", r"\1\\\2", _visible(scenario.description), flags=re.M), ""]
+        out += [re.sub(r"^( {0,3})([`~]{3}|<)", r"\1\\\2", _visible(scenario.description), flags=re.M), ""]
     out += [f"Needs Gradle{' ' + gradle_version if gradle_version else ''}, as `gradle` on PATH.", "",
             "## Steps", "",
             "Run each block from the directory this file is in, in order. What to expect from a block is in its comments.",
@@ -2270,6 +2274,8 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
                 commands += _sh_edit(rel, before, after)
                 files[rel] = after.encode("utf-8")
         else:
+            if _is_scenario_md(step.dir):
+                raise GustError(f"steps[{i}].{step.kind}: {step.dir!r} is where the zip's {SCENARIO_MD} goes")
             q = _sh_path(step.dir)
             commands.append(([f"rm -rf {q}" if step.kind == "delete" else f"rm -rf {q} && mkdir {q}"], 0))
             prefix = step.dir + "/"
@@ -2288,12 +2294,14 @@ Command = tuple[list[str], int | None]   # shell lines, and the one that takes t
 
 
 def _chained(commands: list[Command]) -> list[str]:
-    """The lines of the commands, joined with &&, so that the block stops at the first failure."""
-    last = max((k for k, (_, at) in enumerate(commands) if at is not None), default=-1)
+    """The lines of the commands, joined with &&, so that the block stops at the first failure. The comments come
+    first: one inside the chain ends it in an interactive zsh, where a comment is a command."""
+    comments = [line for command, at in commands if at is None for line in command]
+    commands = [c for c in commands if c[1] is not None]
     lines = []
     for k, (command, at) in enumerate(commands):
-        lines += [line + " &&" if k < last and n == at else line for n, line in enumerate(command)]
-    return lines
+        lines += [line + " &&" if k < len(commands) - 1 and n == at else line for n, line in enumerate(command)]
+    return comments + lines
 
 
 def _visible(text: str) -> str:
@@ -2357,11 +2365,11 @@ def _sh_edit(rel: str, before: str, after: str) -> list[Command]:
     """Shell commands for turning before into after at rel: a unified diff for patch -p1, or the whole file written
     anew where a diff will not do: a control character such as a carriage return, whitespace in the path, or a file
     named -, which BSD patch reads as stdout."""
+    name = _visible(rel).replace("\n", "\\n")                 # on one line, so no part of the name runs
     if before == after:
-        name = _visible(rel).replace("\n", "\\n")             # on one line, so no part of the name runs
         return [([f"# {name} stays as it is: its text is replaced with the same text"], None)]
     if _CONTROL_RE.search(before + after) or re.search(r"\s", rel) or rel == "-":
-        return [(["# the whole file, written anew instead of a diff for patch"], None), _sh_write(rel, after)]
+        return [([f"# {name}: the whole file, written anew instead of a diff for patch"], None), _sh_write(rel, after)]
     diff = []
     lines = [re.findall(r"[^\n]*\n|[^\n]+", text) for text in (before, after)]   # split at LF only, as patch does
     for k, line in enumerate(difflib.unified_diff(*lines, f"a/{rel}", f"b/{rel}")):

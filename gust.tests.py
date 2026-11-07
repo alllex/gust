@@ -2414,7 +2414,8 @@ rm -rf build
         readme = self.readme(text)
         self.assertIn("patch -p1 <<'EOF' &&\n--- a/open.txt\n+++ b/open.txt\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n"
                       "+c\n\\ No newline at end of file\nEOF\n", readme)
-        self.assertIn("# the whole file, written anew instead of a diff for patch\nprintf 'one\\r\ndeux\\r\n' > crlf.txt &&\n", readme)
+        self.assertIn("# crlf.txt: the whole file, written anew instead of a diff for patch\n", readme)
+        self.assertIn("\nprintf 'one\\r\ndeux\\r\n' > crlf.txt &&\n", readme)
         self.assertIn("# same.txt stays as it is: its text is replaced with the same text\n", readme)
         self.assertIn("cat > 'my file.txt' <<'EOF'\ny\nEOF\n", readme)
         if shutil.which("patch"):
@@ -2683,6 +2684,39 @@ rm -rf build
         with self.assertRaises(gs.GustError) as cm:
             gs.project_files(scenario)
         self.assertEqual(str(cm.exception), "setup.layout.remote '../x.txt': path must be relative and must not contain '..'")
+
+    def test_scenario_md_in_any_case_is_refused(self):
+        for rel in ("scenario.md", "Scenario.MD/x"):               # one file on macOS and Windows: the replay would overwrite it
+            with self.assertRaises(gs.GustError) as cm:
+                self.readme(f'[[steps]]\nwrite."{rel}" = "x\\n"\n')
+            self.assertEqual(str(cm.exception), f"steps[1].write: {rel!r} is where the zip's SCENARIO.md goes")
+        scenario = self.scenario_file('[setup.layout.project]\n"Scenario.md" = "x\\n"\n[[steps]]\nrun.gradle = "help"\n', "own.toml")
+        self.assertEqual(self.cli("zip", str(scenario)), (gs.EXIT_ERROR, "", "ERROR: the project has a SCENARIO.md of its own, where the zip's SCENARIO.md goes\n"))
+
+    def test_delete_or_clear_of_scenario_md_is_refused(self):
+        for kind, rel in (("delete", "SCENARIO.md"), ("clear", "scenario.md")):
+            with self.assertRaises(gs.GustError) as cm:
+                self.readme(f'[[steps]]\n{kind} = "{rel}"\n')
+            self.assertEqual(str(cm.exception), f"steps[1].{kind}: {rel!r} is where the zip's SCENARIO.md goes")
+
+    def test_html_at_the_start_of_a_description_line_is_escaped(self):
+        readme = self.readme('description = """<!-- not a comment\n  <pre>x"""\n[[steps]]\nrun.gradle = "help"\n')
+        self.assertIn("\n\\<!-- not a comment\n  \\<pre>x\n", readme)
+
+    def test_a_chain_has_no_comment_inside(self):
+        text = ('[setup.layout.project]\n"a.txt" = "a\\n"\n"c.txt" = "x\\r\\n"\n"s.txt" = "s\\n"\n'
+                '[[steps]]\nedit = [{ file = "a.txt", replace = "a", with = "b" }, { file = "c.txt", replace = "x", with = "y" },'
+                ' { file = "s.txt", replace = "s", with = "s" }, { file = "a.txt", replace = "b", with = "c" }]\n')
+        body = re.findall(r"^```sh\n(.*?)\n```$", self.readme(text), re.M | re.S)[0].split("\n")
+        self.assertEqual(body[:2], ["# c.txt: the whole file, written anew instead of a diff for patch",
+                                    "# s.txt stays as it is: its text is replaced with the same text"])
+        for previous, line in zip(body, body[1:]):            # in an interactive zsh, a comment there ends the chain
+            self.assertFalse(previous.endswith("&&") and line.startswith("#"), line)
+
+    def test_spec_names_when_dash_forces_printf(self):
+        self.assertIn("starts with E, EO, or EOF and then a non-ASCII", " ".join(gs.FORMAT_SPEC.split()))
+        for content, heredoc in (("E\u00e9\n", False), ("EO\u00e9\n", False), ("EOF\u00e9\n", False), ("EOF2\u00e9\n", True), ("x\u00e9\n", True)):
+            self.assertEqual(gs._sh_write("f", content)[0][0].startswith("cat "), heredoc, content)
 
 class WindowsTest(GustCase):
     """The Windows helpers, run on any OS, some with gs.WINDOWS patched."""
