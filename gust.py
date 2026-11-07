@@ -98,9 +98,6 @@ RUN_KEYS = {"gradle": {"args", "expect"}, "shell": {"command", "expect"}}
 EDIT_KEYS = {"file", "replace", "with"}
 EXPECT_KEYS = {"exit", "output", "no_output"}
 EXPECT_VALUES = ("pass", "fail")
-# IntelliJ language ids (read in any case) by file extension, for the `# language=<id>` comment above a file in flat output
-LANGUAGE_IDS = {"kts": "kotlin", "kt": "kotlin", "java": "java", "gradle": "groovy", "groovy": "groovy", "xml": "xml",
-                "properties": "properties", "json": "json", "yaml": "yaml", "yml": "yaml", "toml": "TOML", "sh": "Shell Script"}
 
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 VERSION_RE = re.compile(r"\d+\.\d+(\.\d+)?([-+][A-Za-z0-9.+-]+)?")   # 9.9.0, 9.8.0-rc-2, 9.9.0-20260916091910+0000
@@ -125,15 +122,12 @@ name = "the test passes"
 run.gradle = "test"
 
 [setup.layout.project]
-# language=kotlin
 "settings.gradle.kts" = 'rootProject.name = "testing-loop"'
-# language=kotlin
 "build.gradle.kts" = '''
 plugins { java }
 repositories { mavenCentral() }
 testing.suites.named<JvmTestSuite>("test") { useJUnitJupiter("5.11.4") }
 '''
-# language=java
 "src/test/java/demo/GreeterTest.java" = '''
 package demo;
 import org.junit.jupiter.api.Test;
@@ -219,13 +213,6 @@ setup.layout.project                the project table (becomes <out>/project)
 
 A layout file (the target of base) has a single [project] table with the same
 rules, and no base of its own.
-
-A comment such as # language=kotlin on the line above a file is for IntelliJ
-only, where the file's content is then highlighted in that language. It has no
-effect on a run. In flat output, one is written above each file with one of
-these extensions, and hand-written scenarios can have them too:
-
-  """ + " ".join(f".{ext}" for ext in LANGUAGE_IDS) + """
 
 steps[]                             each step has exactly one kind: run, write, edit, delete, or clear
   name          string   optional   label; implied when absent: "Run: gradle test", "Edit: Foo.java"
@@ -430,9 +417,8 @@ Commands
                                   dropped and the layout file's files are merged into
                                   [setup.layout.project] as for setup, so no layout file is needed.
                                   A remote stays a link. The comment and blank lines at the top of
-                                  the file are kept; other comments are lost, and a # language=
-                                  comment is written above each file with a known extension (see
-                                  setup.layout.project). Nothing but the TOML goes to stdout.
+                                  the file are kept; other comments are lost. Nothing but the TOML
+                                  goes to stdout.
   zip SCENARIO [-o PATH] [--gradle VERSION]
                                   write the scenario as a zip, with no Gradle run; see Scenario zip
 
@@ -2440,18 +2426,10 @@ def _write_table(table: dict, path: tuple, out: list[str], aot: bool, tight: boo
         name = ".".join(_key(p) for p in path)
         out.append(f"[[{name}]]" if aot else f"[{name}]")
     for k in plain:
-        if path in FILE_TABLES and (language := language_id(k)):
-            out.append(f'# language="{language}"' if " " in language else f"# language={language}")   # an IntelliJ injection
         out.extend(_plain_lines((k,), table[k], path + (k,)))
     for k in sections:
         for element in table[k] if _is_aot(table[k]) else [table[k]]:
             _write_table(element, path + (k,), out, aot=_is_aot(table[k]), tight=tight or aot)
-
-
-def language_id(file: str) -> str | None:
-    """The IntelliJ language id for a file path by its extension, in any case, or None for an unknown one."""
-    m = re.search(r"\.([^./\\]+)$", file)
-    return LANGUAGE_IDS.get(m.group(1).lower()) if m else None
 
 
 def _is_aot(v: object) -> bool:

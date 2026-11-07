@@ -34,15 +34,12 @@ name = "the test passes"
 run.gradle = "test"
 
 [setup.layout.project]
-# language=kotlin
 "settings.gradle.kts" = 'rootProject.name = "testing-loop"'
-# language=kotlin
 "build.gradle.kts" = '''
 plugins { java }
 repositories { mavenCentral() }
 testing.suites.named<JvmTestSuite>("test") { useJUnitJupiter("5.11.4") }
 '''
-# language=java
 "src/test/java/demo/GreeterTest.java" = '''
 package demo;
 import org.junit.jupiter.api.Test;
@@ -146,9 +143,7 @@ user home) are made there. To avoid that, pass `--out` or `--tmp` and set
 A scenario built on a layout file becomes one self-contained file with
 `gust flat loop.toml > loop.flat.toml`: the layout file's files are merged into
 `[setup.layout.project]` as for a run, and `setup.layout.remote` stays a link.
-The comments at the top of the file are kept, the others are lost, and a
-`# language=` comment goes above each file with a known extension (see
-[Highlighting in your editor](#highlighting-in-your-editor)).
+The comments at the top of the file are kept, the others are lost.
 
 The Gradle the steps run with is the first of:
 
@@ -184,8 +179,9 @@ get them as `$GRADLE_ARGS`.
 
 **IntelliJ IDEA.** With a `# language=kotlin` comment on the line above a
 file, its content is highlighted as Kotlin. Such a comment is for IntelliJ only.
-`gust flat` writes one above each file with a known extension, and you can write
-them by hand too.
+You write it by hand, and like other comments past the top of the file, it is
+lost in `gust flat` output. With many files, the file names are harder to pick
+out between such comments, so add them only where the highlighting is worth it.
 
 **Neovim** 0.10 or newer, with tree-sitter highlighting on for TOML. Save this
 as `~/.config/nvim/after/queries/toml/injections.scm`, so that each `'''` string
