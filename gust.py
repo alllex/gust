@@ -88,7 +88,7 @@ EXPECT_KEYS = {"exit", "output", "no_output"}
 EXPECT_VALUES = ("pass", "fail")
 
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-VERSION_RE = re.compile(r"\d+\.\d+(\.\d+)?([-+][A-Za-z0-9.+-]+)?")   # 9.7.1, 9.8.0-rc-2, 9.9.0-20260916091910+0000
+VERSION_RE = re.compile(r"\d+\.\d+(\.\d+)?([-+][A-Za-z0-9.+-]+)?")   # 9.9.0, 9.8.0-rc-2, 9.9.0-20260916091910+0000
 SHA_RE = re.compile(r"[0-9a-f]{7,40}")
 
 EXAMPLE = """\
