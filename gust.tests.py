@@ -3321,6 +3321,156 @@ class WindowsTest(GustCase):
         self.assertEqual(gs._settle_binary(str(self.gecho), lambda rel: False), (str(self.gecho), None))                  # C:\...\gecho.bat
 
 
+class SchemaTest(RemoteRepo, GustCase):
+    """The JSON schema in the spec against the summaries of real runs and checks: every summary fits the schema, key
+    order included, and every key of the schema turns up in one of them, so the two cannot drift apart."""
+
+    @staticmethod
+    def schema():
+        """{interface: [(key, optional, type)]}, read from the spec's `interface X { ... }` blocks."""
+        interfaces = {}
+        for name, body in re.findall(r"^  interface (\w+) \{[^\n]*\n(.*?)^  \}$", gs.FORMAT_SPEC, re.M | re.S):
+            members = []
+            for line in body.splitlines():
+                code = line.split("//")[0].strip()
+                if code:
+                    key, optional, typ = re.fullmatch(r"(\w+)(\??): (.+)", code).groups()
+                    members.append((key, optional == "?", typ))
+            interfaces[name] = members
+        return interfaces
+
+    @staticmethod
+    def split(typ, sep="|"):
+        """typ split at sep outside parentheses."""
+        parts, depth, part = [], 0, ""
+        for ch in typ:
+            depth += (ch == "(") - (ch == ")")
+            if ch == sep and depth == 0:
+                parts.append(part.strip())
+                part = ""
+            else:
+                part += ch
+        return parts + [part.strip()]
+
+    def fits(self, value, typ, schema):
+        """The (interface, key) pairs met in value when it fits the type expression typ, else None."""
+        alternatives = self.split(typ)
+        if len(alternatives) > 1:
+            return next((seen for alt in alternatives if (seen := self.fits(value, alt, schema)) is not None), None)
+        if typ.endswith("[]"):
+            inner = typ[:-2]
+            inner = inner[1:-1] if inner.startswith("(") else inner
+            if not isinstance(value, list):
+                return None
+            seen = set()
+            for item in value:
+                found = self.fits(item, inner, schema)
+                if found is None:
+                    return None
+                seen |= found
+            return seen
+        if typ.startswith('"'):
+            return set() if value == json.loads(typ) else None
+        simple = {"string": str, "boolean": bool}
+        if typ in simple:
+            return set() if isinstance(value, simple[typ]) else None
+        if typ == "number":
+            return set() if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+        members = schema[typ]                                                      # an interface
+        if not isinstance(value, dict):
+            return None
+        keys = [k for k, _, _ in members]
+        if not set(value) <= set(keys) or any(not opt and k not in value for k, opt, _ in members):
+            return None
+        if list(value) != [k for k in keys if k in value]:                          # in the order written
+            return None
+        seen = {(typ, k) for k in value}
+        for key, _, member_type in members:
+            if key in value:
+                found = self.fits(value[key], member_type, schema)
+                if found is None:
+                    return None
+                seen |= found
+        return seen
+
+    def run_json(self, text, *argv, name="s"):
+        """`run --json`'s summary of the scenario text, checked against summary.json."""
+        s = self.scenario_file(text, f"{name}.toml")
+        _, out, _ = self.cli("run", str(s), "--json", *argv)
+        summary = json.loads(out.rstrip("\n").splitlines()[-1])
+        self.assertEqual(json.loads((self.tmp / f"{name}.out" / "summary.json").read_text()), summary)
+        return summary
+
+    def check_json(self, text, *argv, name="c"):
+        code, out, _ = self.cli("check", str(self.scenario_file(text, f"{name}.toml")), "--json", *argv)
+        self.assertEqual(code, gs.EXIT_PASS, out)
+        return json.loads(out.rstrip("\n").splitlines()[-1])
+
+    def test_summaries_fit_the_schema_and_cover_it(self):
+        schema = self.schema()
+        self.assertEqual(sorted(schema), sorted(["Run", "Remote", "Install", "RunStep", "FileStep", "ExitCheck", "OutputCheck",
+                                                 "StopDaemons", "DaemonStop", "StopError", "StopWarning", "Check", "StepCounts",
+                                                 "CheckRemote"]))
+        runs, checks = [], []
+        self.script("tracer", TRACER)
+        runs.append(self.run_json(                                                  # pass: every kind of step, traced, with --
+            'description = "all kinds"\n[setup.layout.project]\n"f.txt" = "one"\n"d/x.txt" = "x"\n'
+            '[[steps]]\nrun.gradle = "help"\n'
+            '[[steps]]\nrun.shell = { command = "echo alpha", expect = { output = ["alpha"], no_output = ["beta"] } }\n'
+            '[[steps]]\nwrite."g.txt" = "two"\n'
+            '[[steps]]\nedit = [{ file = "f.txt", replace = "one", with = "three" }]\n'
+            '[[steps]]\ndelete = "d"\n[[steps]]\nclear = "e"\n',
+            "--gradle", "tracer", "--trace", "--", "--offline", name="pass"))
+        runs.append(self.run_json('[[steps]]\nrun.shell = { command = "echo x", expect = { exit = "fail", output = ["y"] } }\n',
+                                  "--keep-daemons", name="fail"))                   # fail: an unexpected exit and output check
+        runs.append(self.run_json('[setup.layout.project]\n"f.txt" = "aa"\n[[steps]]'
+                                  '\nedit = [{ file = "f.txt", replace = "a", with = "b" }]\n',
+                                  "--keep-daemons", name="error"))                  # error: a file step
+        real = gs._run_logged
+
+        def gone(*names):
+            def run_logged(argv, cwd, env, log_path, echo):
+                if log_path.name in names:
+                    raise OSError(2, "No such file or directory", "gone")
+                return real(argv, cwd, env, log_path, echo)
+            return run_logged
+        with mock.patch.object(gs, "_run_logged", gone("step-01.log", "stop-daemons-after.log")):
+            runs.append(self.run_json('[[steps]]\nrun.shell = "true"\n', "--gradle", "gecho", name="nostart"))   # error, and a warning
+        with mock.patch.object(gs, "_run_logged", gone("stop-daemons-before.log")):
+            runs.append(self.run_json('[[steps]]\nrun.shell = "true"\n', "--gradle", "gecho", name="nobef"))     # error at [BEF]
+        self.script("flaky", RunTest.FLAKY_STOP)
+        runs.append(self.run_json('[[steps]]\nrun.shell = "touch after"\n', "--gradle", "flaky", name="warn"))   # a warning: exit 3
+        os.environ["STOP_FAILS"] = "1"
+        runs.append(self.run_json('[[steps]]\nrun.shell = "true"\n', "--gradle", "flaky", name="bef"))           # error at [BEF]: exit 3
+        del os.environ["STOP_FAILS"]
+        self.fake_gradle_on_path()
+        version = 'setup.gradle = "9.7.1"\n' + SETTINGS + '[[steps]]\nrun.gradle = "help"\n'
+        runs.append(self.run_json(version, "--keep-daemons", name="wrapper"))                                 # a wrapper install
+        self.script("gradle", 'if ARGS[2:3] == ["--version"]:\n    print("Gradle 9.7.1")\n    sys.exit(0)\nsys.exit(7)\n')
+        runs.append(self.run_json(version, name="wrapperfail"))                                               # error at [WRP]
+        remote = f'setup.layout.remote = "{self.url}#{self.sha}"\n[[steps]]\nrun.shell = "true"\n'
+        checks.append(self.check_json(remote, "--keep-daemons"))                                               # not cached yet
+        runs.append(self.run_json(remote, "--keep-daemons", name="remote"))                                    # fetched
+        runs.append(self.run_json(remote, "--keep-daemons", name="remote2"))                                   # cached
+        checks.append(self.check_json('description = "d"\n' + remote, "--keep-daemons"))                       # cached
+        (self.tmp / "proj").mkdir()
+        checks.append(self.check_json('setup.project = "proj"\n[[steps]]\nrun.gradle = "help"\n', "--gradle", "gecho"))
+        self.assertEqual([r["result"] for r in runs],
+                         ["pass", "fail", "error", "error", "error", "pass", "error", "pass", "error", "pass", "pass"])
+        seen = set()
+        for root, summaries in (("Run", runs), ("Check", checks)):
+            for summary in summaries:
+                found = self.fits(summary, root, schema)
+                self.assertIsNotNone(found, f"does not fit the {root} schema: {json.dumps(summary)}")
+                seen |= found
+        never = sorted(f"{name}.{key}" for name, members in schema.items() for key, _, _ in members if (name, key) not in seen)
+        self.assertEqual(never, [], "keys of the schema that no summary has")
+        # and the reverse: what the schema refuses
+        for bad in ({**runs[0], "extra": 1}, {k: v for k, v in runs[0].items() if k != "out"}, {**runs[0], "result": "success"},
+                    dict(reversed(list(runs[0].items())))):
+            self.assertIsNone(self.fits(bad, "Run", schema), bad)
+
+
 class SpecTest(unittest.TestCase):
     def test_example_is_a_valid_scenario(self):
         scenario = gs.load_scenario(gs.EXAMPLE)
