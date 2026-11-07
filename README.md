@@ -126,6 +126,10 @@ The Gradle the steps run with is the first of:
 
 1. `--gradle <bin>`: a distribution or a local build, as a name on PATH or in
    the working directory, or as a path. A value with a `/` is always a path.
+   A `./` path is relative to the project dir, and is probed before anything
+   is laid out, so it must be in the remote checkout or the project dir in
+   place, or, for `stop-daemons`, in the set-up project; one in the project
+   table alone is refused.
 2. `--gradle 9.9.0`: a version, when the value is not a binary on PATH or in
    the working directory. A wrapper for it is installed into the project first,
    with `gradle` from PATH, so a local Gradle installation is assumed and the
@@ -175,13 +179,17 @@ left alone.
 
 Daemons of the chosen Gradle are stopped before the first step and after the
 last, so every run starts cold. These are the `[BEF]` and `[AFT]` lines around
-the numbered steps; pass `--keep-daemons` to skip them.
+the numbered steps; pass `--keep-daemons` to skip them. The stops need Gradle
+even when no step runs it, so a scenario with shell steps alone needs no Gradle
+only with `--keep-daemons`. `check` takes `--keep-daemons` too, to judge the
+scenario as that run would.
 
 The working directory also gets `.gust/`, a cache that is safe to delete (set
 `GUST_DIR` to put it elsewhere):
 
 - `remotes/`: one git checkout per `setup.layout.remote`, shallow where
-  possible.
+  possible, named after the URL and the commit. A long URL is cut to a prefix
+  and a hash, so the name stays within 100 characters.
 - `shared-gradle-user-home/`: the Gradle user home for every Gradle invocation,
   so distributions, dependency caches, and daemons stay here instead of in
   `~/.gradle`.

@@ -24,6 +24,7 @@ if sys.version_info < (3, 11):  # ahead of any import that needs 3.11; keep this
 import argparse
 import difflib
 import functools
+import hashlib
 import json
 import os
 import posixpath
@@ -66,6 +67,7 @@ WRAPPER_LABEL = "[WRP]"
 GUST_DIR_ENV = "GUST_DIR"        # where .gust goes (default: <working dir>/.gust)
 SHARED_HOME = "shared-gradle-user-home"   # in .gust: the default Gradle user home
 REMOTES_DIR = "remotes"                   # in .gust: one checkout per remote
+REMOTE_NAME_MAX = 100                     # the longest checkout dir name; a longer one gets cut, for Windows' path limits too
 
 # --- Gradle
 GRADLE_ENV = "GRADLE"            # for shell steps: the Gradle binary
@@ -191,6 +193,9 @@ setup.layout                        base or remote (not both), plus the project 
                                     are not accepted, so a cached checkout is never stale. Each
                                     remote is fetched once into .gust/remotes/<host>-<path>-<sha>
                                     and reused while its HEAD is that commit. .git is not copied.
+                                    In a name longer than 100 characters, <host>-<path> is cut to
+                                    a prefix plus a hash of the whole <host>/<path>, so one URL
+                                    always gets the same dir.
   project       table    optional   the project's files; see setup.layout.project
 
 setup.layout.project                the project table (becomes <out>/project)
@@ -368,16 +373,17 @@ Commands
   help [COMMAND]                  print usage, or a command's usage
   version                         print gust's version, the Python it runs on, and the script's path
   spec                            print this text
-  check SCENARIO [--gradle BIN|VERSION] [--gradle-user-home DIR] [--project DIR] [--json]
-                                  validate the scenario and settle the Gradle binary as run would,
-                                  with nothing set up, installed, or fetched (an uncached remote is
-                                  noted, a cached one checked as run checks it: its HEAD, its
-                                  subdirectory, the file flow). The only thing written is what the
-                                  --version probe leaves in the Gradle user home. Output: the header
-                                  with the description
-                                  under scenario:, then `steps: N (K gradle, L shell, M write,
-                                  P edit, Q delete, R clear)`, or the error. Worth running before
-                                  a long run.
+  check SCENARIO [--gradle BIN|VERSION] [--gradle-user-home DIR] [--project DIR] [--json] [--keep-daemons]
+                                  validate the scenario and settle the Gradle binary as run would: a
+                                  scenario with no Gradle step still needs Gradle for the daemon
+                                  stops, unless --keep-daemons is given, as for run. Nothing is set
+                                  up, installed, or fetched (an uncached remote is noted, a cached
+                                  one checked as run checks it: its HEAD, its subdirectory, the file
+                                  flow). The only thing written is what the --version probe leaves
+                                  in the Gradle user home. Output: the header with the description
+                                  under scenario:, then `steps: N (K gradle, L shell, M write, P
+                                  edit, Q delete, R clear)`, or the error. Worth running before a
+                                  long run.
                                   With a remote, the header follows `remote:   <link>` and
                                   `checkout: <dir> (cached)`, or, when the remote is not in
                                   .gust/remotes yet, the one line `remote:   <link> (not cached;
@@ -446,8 +452,9 @@ any binary (stop-daemons). The note is the source, (default),
 (scenario), or (--gradle), plus ", installed by gradle" when the wrapper is
 installed first. In check, "; not checked, remote not cached" is added when the
 remote is not fetched yet. The summary has the version as gradle_version. When
-nothing runs with Gradle (a shell-only scenario without daemon stops), the
-binary is neither checked nor probed and the line has no version.
+nothing runs with Gradle (a shell-only scenario with --keep-daemons, in run and
+check alike), the binary is neither checked nor probed and the line has no
+version.
 
 Console
 =======
@@ -866,9 +873,16 @@ class Remote:
 
     @property
     def identity(self) -> str:
+        """<host>-<path>-<sha>, from the URL. Past REMOTE_NAME_MAX, <host>-<path> is cut to a prefix plus a hash of the
+        URL's whole host and path, so the same URL always maps to the same dir, and a name within the limit stays as it was."""
         host_path = re.sub(r"^[a-z+]+://", "", self.url)
         host_path = re.sub(r"\.git$", "", host_path)
-        return re.sub(r"[^A-Za-z0-9._-]+", "-", host_path).strip("-") + "-" + self.sha
+        name = re.sub(r"[^A-Za-z0-9._-]+", "-", host_path).strip("-")
+        if len(name) + 1 + len(self.sha) > REMOTE_NAME_MAX:
+            digest = hashlib.sha256(host_path.encode()).hexdigest()[:12]       # as the name: no scheme, no .git
+            prefix = name[:REMOTE_NAME_MAX - len(self.sha) - len(digest) - 2].rstrip("-.")   # no -. or -- join with the digest
+            name = f"{prefix}-{digest}" if prefix else digest
+        return name + "-" + self.sha
 
     @property
     def dir(self) -> Path:
@@ -1404,9 +1418,14 @@ def fetch_remote(scenario: Scenario, out=None, may_fetch: bool = True) -> dict |
     if shutil.which("git") is None:
         raise GustError("setup.layout.remote needs git on PATH")
     target = remote.dir
-    cached = (target / ".git").exists()
-    if not cached and target.exists():
-        raise GustError(f"checkout dir exists but is not a git checkout, so it is left alone: {target}")
+    try:
+        cached = (target / ".git").exists()
+        if not cached and target.exists():
+            raise GustError(f"checkout dir exists but is not a git checkout, so it is left alone: {target}")
+        if not cached and may_fetch:
+            target.mkdir(parents=True)                    # ahead of the progress lines: none on a failure here
+    except OSError as e:                                  # the path is too long, say
+        raise GustError(f"cannot use {target} as the checkout dir: {e.strerror}") from None
     if not cached and not may_fetch:
         return None
     fetched = False
@@ -1421,7 +1440,6 @@ def fetch_remote(scenario: Scenario, out=None, may_fetch: bool = True) -> dict |
             print(f"remote:   {remote.link}", file=out)
             print(f"checkout: {target}", file=out)
             print(f"          fetching {remote.sha} from {remote.url}", file=out)
-        target.mkdir(parents=True)
         try:
             _git(target, "init", "-q")
             _git(target, "remote", "add", "origin", remote.url)
@@ -1633,8 +1651,14 @@ def settle_gradle(scenario: Scenario, cli_value: str | None, root: Path | None, 
             raise GustError(f'setup.gradle = "wrapper" but {WRAPPER_FILE} is not among the project\'s files')
         if binary != WRAPPER and shutil.which(binary) is None:
             raise GustError(f"'{binary}' is not on PATH")
-    if binary.startswith("./") and root is None:                         # project-relative, with nothing on disk yet
-        raise GustError("the wrapper's gradle/wrapper/gradle-wrapper.jar cannot come from an inline layout; use setup.layout.remote")
+    if (binary.startswith("./") and may_install                          # before setup: in the project table alone, not on disk
+            and (root is None or not (root / binary).is_file())):
+        if binary == WRAPPER and root is None:
+            raise GustError("the wrapper's gradle/wrapper/gradle-wrapper.jar cannot come from an inline layout; use setup.layout.remote")
+        what, hint = ((label, "use a binary outside the project, or one in the remote checkout") if cli_value is not None
+                      else ('setup.gradle "wrapper"', "the wrapper must be in the remote checkout"))
+        raise GustError(f"{what}: {Path(binary).as_posix()} is in the project table alone, which is laid out only after Gradle "
+                        f"is probed; {hint}")
     return GradleChoice(binary, source, version=probe_gradle(binary, label, root if root is not None else Path.cwd(), user_home))
 
 
@@ -2742,6 +2766,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_check.add_argument("--gradle-user-home", type=Path, metavar="DIR", help=HOME_HELP)
     p_check.add_argument("--project", type=Path, metavar="DIR", help=PROJECT_HELP)
     p_check.add_argument("--json", action="store_true", help="print the summary as JSON on the last line")
+    p_check.add_argument("--keep-daemons", action="store_true",
+                         help="check as for 'run --keep-daemons', where a scenario without Gradle steps needs no Gradle")
     p_stop = sub.add_parser("stop-daemons", help="run '<gradle> --stop' in the set-up project",
                             description="Run '<gradle> --stop' in the set-up project, stopping every daemon of that Gradle "
                                         "and user home. Needs <out>/project from 'setup' or an earlier 'run', or a "
@@ -2892,7 +2918,8 @@ def _cli_check(args) -> int:
         root = remote.source
     _check_shell(scenario)
     counts = scenario.counts()
-    choice = settle_gradle(scenario, args.gradle, root, user_home, needed=counts["gradle"] > 0, may_install=True)
+    needed = not args.keep_daemons or counts["gradle"] > 0                      # as run: the daemon stops need Gradle too
+    choice = settle_gradle(scenario, args.gradle, root, user_home, needed=needed, may_install=True)
     print_remote(scenario, remote_info, sys.stdout)
     print_header(scenario, None, user_home, choice, sys.stdout, description=True)
     print(f"steps: {len(scenario.steps)} ({', '.join(f'{n} {kind}' for kind, n in counts.items())})")
