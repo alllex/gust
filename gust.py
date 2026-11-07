@@ -88,7 +88,7 @@ EXPECT_KEYS = {"exit", "output", "no_output"}
 EXPECT_VALUES = ("pass", "fail")
 
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-VERSION_RE = re.compile(r"\d+\.\d+(\.\d+)?([-+][A-Za-z0-9.+-]+)?")   # 9.7.1, 9.8.0-rc-2, 9.9.0-20260916091910+0000
+VERSION_RE = re.compile(r"\d+\.\d+(\.\d+)?([-+][A-Za-z0-9.+-]+)?")   # 9.9.0, 9.8.0-rc-2, 9.9.0-20260916091910+0000
 SHA_RE = re.compile(r"[0-9a-f]{7,40}")
 
 EXAMPLE = """\
@@ -133,7 +133,8 @@ Scenario file format (TOML)
 A scenario is one TOML file. Unknown keys are rejected, with the key path in
 the message. Paths are written as quoted keys ("src/Main.java" = ...). Write
 file contents as literal strings (''' ... ''') so $ and backslashes need no
-escaping.
+escaping. No path anywhere in a scenario, setup.project and setup.layout.base
+included, may contain a NUL.
 
 Every file path (a key of the project table or of a write, the file of an
 edit, the directory of a delete or clear) is relative to the project dir, and
@@ -160,12 +161,13 @@ top level
 setup                               what `gust setup` produces, and the first part of `run`
   gradle        string   optional   the Gradle the steps run with, unless --gradle is given:
                                     "wrapper" for the project's own ./gradlew, which must be in the
-                                    remote checkout (the project table cannot hold its jar); or a
-                                    version such as "9.7.1", whose wrapper is installed into the
-                                    project first (see Gradle version; the layout needs a settings
-                                    file). Default: the project's own ./gradlew when the checkout,
-                                    the project dir in place, or, once set up, the project has an
-                                    executable one, else gradle from PATH.
+                                    remote checkout or the project dir in place (the project table
+                                    cannot hold its jar); or a version such as "9.9.0", whose
+                                    wrapper is installed into the project first (see Gradle
+                                    version; the layout needs a settings file). Default: the
+                                    project's own ./gradlew when the checkout, the project dir in
+                                    place, or, once set up, the project has an executable one, else
+                                    gradle from PATH.
   layout        table    optional   the project's files; see setup.layout
   project       string   optional   an existing project dir, used in place instead of a layout;
                                     see In place. Relative to the scenario file or absolute
@@ -216,7 +218,8 @@ an error. On any error nothing is removed and the run ends as an error.
 
 steps[].run.gradle                  Gradle with these arguments, run in the project dir
   shorthand     run.gradle = "test"   means { args = "test", expect = "pass" }
-  args          string   required   the arguments
+  args          string   required   the arguments, which must split by sh's rules: an unclosed quote
+                                    is refused when the scenario is loaded, on every system
   expect        string|table optional  see steps[].run.*.expect; default "pass"
 
 steps[].run.shell                   a command run through sh in the project dir, with $GRADLE set
@@ -230,7 +233,7 @@ steps[].run.*.expect                what must hold after the step; every listed 
   shorthand     expect = "fail"       means { exit = "fail" }
   exit          string   optional   "pass" (default, exit code 0) or "fail" (any other exit code)
   output        array    optional   strings that must each appear in the step's combined output,
-                                    where a CRLF line end is read as LF
+                                    where a CRLF or CR line end is read as LF
   no_output     array    optional   strings that must not appear in it
 
 steps[].edit[]
@@ -267,6 +270,7 @@ after the scenario's name for stdin:
                          with --trace: the build operation trace of run.gradle step NN
   <out>/stop-daemons-before.log, <out>/stop-daemons-after.log
                          output of the daemon stops around the steps
+  <out>/stop-daemons.log output of the stop-daemons command
   <out>/summary.json     the summary of the run
   <out>/.gust-run        marker: the directory was made by gust and may be replaced or
                          removed on a later run
@@ -336,7 +340,7 @@ distributions and dependencies again.
 Gradle user home
 ================
 
-Every Gradle invocation from gust (run.gradle steps, both daemon stops, the
+Every Gradle invocation from gust (run.gradle steps, the daemon stops, the
 wrapper install, the version probe) starts with
 
   --gradle-user-home <.gust/shared-gradle-user-home>
@@ -361,15 +365,24 @@ Commands
   check SCENARIO [--gradle BIN|VERSION] [--gradle-user-home DIR] [--project DIR] [--json]
                                   validate the scenario and settle the Gradle binary as run would,
                                   with nothing set up, installed, or fetched (an uncached remote is
-                                  noted). The only thing written is what the --version probe leaves
-                                  in the Gradle user home. Output: the header with the description
+                                  noted, a cached one checked as run checks it: its HEAD, its
+                                  subdirectory, the file flow). The only thing written is what the
+                                  --version probe leaves in the Gradle user home. Output: the header
+                                  with the description
                                   under scenario:, then `steps: N (K gradle, L shell, M write,
                                   P edit, Q delete, R clear)`, or the error. Worth running before
                                   a long run.
+                                  With a remote, the header follows `remote:   <link>` and
+                                  `checkout: <dir> (cached)`, or, when the remote is not in
+                                  .gust/remotes yet, the one line `remote:   <link> (not cached;
+                                  fetched on run)`; then the file checks (edit files, the paths of
+                                  delete and clear, a path that is both a file and a directory)
+                                  wait until the remote is fetched.
                                   The --json summary is {scenario, description, gradle,
                                   gradle_version, steps (a count), step_counts, remote {link,
                                   cached} when there is one, project when in place, result}, with
-                                  result always "success", as in run's summary.
+                                  result always "success", as in run's summary. As there, a key
+                                  with no value (no description, no version) is left out.
   setup SCENARIO [--out DIR | --tmp] [--gradle BIN|VERSION] [--gradle-user-home DIR] [--show-output]
                                   lay the project out and, with a version in play, install its
                                   wrapper; no step runs. Ends in `result: set up` (or
@@ -395,13 +408,15 @@ With --project DIR, an existing project dir is used in place (see In place).
 
 --gradle takes a binary or a version, read in this order:
   1. A value with a "/" is a path to a binary. ./gradlew (or any ./path) is
-     relative to the project dir and must be in the project table, the
-     remote checkout, or the project dir in place. Anything else is a
-     filesystem path, such as <distribution>/bin/gradle, and must be an
-     executable file (a leading ~ is expanded).
+     relative to the project dir and must be in the remote checkout, the
+     project dir in place, or, for stop-daemons, the set-up project; one in
+     the project table alone is refused, as it is probed before anything is
+     laid out. check leaves a remote that is not cached yet to run. Anything
+     else is a filesystem path, such as <distribution>/bin/gradle, and must be
+     an executable file (a leading ~ is expanded).
   2. A value without a "/" that names an executable on PATH or in the working
      directory (gradle, grl) is a binary.
-  3. Anything else must be a Gradle version (9.7.1, 9.8.0-rc-2). Its wrapper
+  3. Anything else must be a Gradle version (9.9.0, 9.8.0-rc-2). Its wrapper
      is installed first, with gradle from PATH (see Gradle version), which
      needs a settings file in the layout. Nothing is installed by
      stop-daemons, so there --gradle takes a binary only (BIN). Nor is
@@ -433,10 +448,11 @@ Console
 
 Once the preconditions pass, a header is printed: scenario:, out:, project:
 (in place only), home:, gradle:. With a remote, the remote: and checkout: lines
-come first, while the checkout is fetched or found in the cache. Then come
+come first. A fetch prints them ahead of itself, as its progress; otherwise they
+are printed with the header, once every precondition has passed. Then come
 blocks, each a label line and a result line:
 
-  [WRP] Install Gradle wrapper 9.7.1     a `$ <command>` line, the wrapper task's output with
+  [WRP] Install Gradle wrapper 9.9.0     a `$ <command>` line, the wrapper task's output with
                                          --show-output, then `exit=0 in 3.1s -> install-wrapper.log`.
                                          On failure: `ERROR: exit=N ...`, the log's tail, and
                                          result: ERROR (exit 2)
@@ -465,9 +481,14 @@ in the log file name (or "last K of M lines of <log>"), the closing one is all
 dashes. Commands are shown without the --gradle-user-home pair (or the trace
 properties of --trace). The words EXPECTED, UNEXPECTED, and ERROR go to stdout;
 a precondition failure is a single `ERROR: ...` line on stderr, with nothing on
-stdout (a usage error has the usage line before it). For stop-daemons the console has the header and a full [STOP] block
-(label, `$` line, `exit=0 in 0.2s -> stop-daemons.log`); on failure the last
-line is `ERROR: exit=N ...`, followed by result: ERROR. On success, check and
+stdout apart from a fetch's progress lines (a usage error has the usage line
+before it). Once the header of run or setup is printed, anything else gust
+cannot do, such as a wrapper install command that cannot start, is an
+`ERROR: ...` line on stdout and ends the run in result: ERROR, the out: line,
+and (for run) summary.json, with exit code 2.
+For stop-daemons the console has the header and a full [STOP] block (label, `$`
+line, `exit=0 in 0.2s -> stop-daemons.log`); on failure the last line is
+`ERROR: exit=N ...`, followed by result: ERROR. On success, check and
 stop-daemons have no result: line.
 
 On a terminal the words are colored, in the terminal's own palette: EXPECTED
@@ -475,17 +496,33 @@ green, UNEXPECTED bold red, ERROR red (on stderr too), SUCCESS bold, FAILURE
 yellow. With NO_COLOR set, or TERM=dumb, the console is plain; with FORCE_COLOR
 set, it is colored through a pipe too. Logs, summary.json, and the --json line
 are always plain. FORCE_COLOR is passed on to the steps as well, so a shell
-step's log can get color codes from a tool that honors it.
+step's log can get color codes from a tool that honors it. A character that
+the console's encoding cannot hold (a redirected stdout on Windows, say) is
+printed as an escape such as \\u65e5; the logs keep it as it is.
 
 With --json (run, check), the summary is printed as one JSON object on
 the last line of stdout; for run it is also in <out>/summary.json. Its keys
 follow the TOML's: `name` per step, `description` at the top, and
 `gradle_args` for the arguments after --. The words are those of the console,
-in lower case, all under the key `result`:
+in lower case, all under the key `result`. The keys of run's summary, in order:
 
+  scenario               the scenario's name
+  description            the scenario's description, when it has one
+  out                    the out dir, as on the out: line
+  project                the project dir: <out>/project, or the project dir in place
+  gradle                 the Gradle binary, as on the gradle: line
+  gradle_version         its version, as on the gradle: line, when that line has one
+  gradle_args            the arguments after --, as a list, when there are any
+  gradle_user_home       the Gradle user home, as on the home: line
+  remote                 with setup.layout.remote: {link, checkout, fetched}, fetched false when cached
+  install                with a Gradle version in play: the wrapper install's {version, log, exit_code}
   result                 the run: "success", "failure", or "error"; with "error", `error`
                          holds the message: the step's, or `wrapper install failed: exit=N
                          -> install-wrapper.log`
+  steps[]                the steps that ran, in order; [] after a failed wrapper install
+  steps[].index          the step's number, i in [i/N]
+  steps[].kind           "gradle", "shell", "write", "edit", "delete", or "clear"
+  steps[].name           the step's name, given or implied
   steps[].result         a run step: "expected", "unexpected", or "error"; any other step:
                          "done" or "error". Every step with "error" has the message as its
                          `error`, run steps included
@@ -494,9 +531,13 @@ in lower case, all under the key `result`:
                            {"check": "output", "text": "BUILD FAILED", "result": "unexpected"}
                            {"check": "no_output", "text": "deprecated", "result": "expected"}
                          with result "expected" or "unexpected"
+  steps[].files          a write or edit step's files, or the directory of a delete or clear; []
+                         for a delete of a directory that was not there
+  stop_daemons           the daemon stops, {before, after}; none with --keep-daemons or after a
+                         failed wrapper install
 
 A run step also has its exit_code, duration_s, log, and command; one that could
-not start (its project dir gone, say) has only its command and error: no
+not start (its project dir gone, say) has its command and error, but no
 exit_code, duration_s, log, or checks. The daemon stops have neither a result
 nor checks: each is {exit_code, duration_s, log}, or {error} for a stop that
 could not start, which never changes the result.
@@ -535,11 +576,11 @@ Gradle version
 ==============
 
 A local Gradle installation is assumed. When a version is in play
-(setup.gradle = "9.7.1", or --gradle 9.7.1), a wrapper for it is installed into
+(setup.gradle = "9.9.0", or --gradle 9.9.0), a wrapper for it is installed into
 the project right after setup and before anything else runs, with Gradle's own
 wrapper task and gradle from PATH:
 
-  gradle wrapper --gradle-version 9.7.1 --no-daemon
+  gradle wrapper --gradle-version 9.9.0 --no-daemon
 
 The steps and both daemon stops then use ./gradlew. The output is in
 <out>/install-wrapper.log. The wrapper task only works inside a Gradle build,
@@ -588,32 +629,40 @@ success, the zip's path is the only line on stdout.
     commit. Otherwise no version is named.
 
 SCENARIO.md has the scenario's name as its title, the description, a
-`Needs Gradle <version>, as gradle on PATH.` line, and then each step under
-a `### N. <step name>` heading with its own sh block:
+"Needs Gradle <version>, as `gradle` on PATH." line (without <version> when
+none is known), and then each step under a `### N. <step name>` heading with
+its own sh block:
 
-  run.gradle      `gradle <args>`, after comments for the expectations:
-                  `# expected to fail`, `# expected in the output: ...`,
-                  `# not expected in the output: ...`
+  run.gradle      `gradle <args>`, with the expectations in a sentence above
+                  the block, such as: Expected: fails, and the output contains
+                  `BUILD FAILED`. An output text of more than one line is in a
+                  text block of its own after that sentence
   run.shell       the command, with ./gradlew and ../gradlew read as gradle; when
                   $GRADLE or $GRADLE_ARGS is used, they are set in a block
                   before the steps
   write           a `cat > <file> <<'EOF'` heredoc (EOF2, EOF3, ... when a line
                   of the file is EOF), with `mkdir -p` for a new directory. A file
                   without a final newline, or with a carriage return or other
-                  control character, is written with printf. So is a file with
-                  a line that starts with E, EO, or EOF and then a non-ASCII
-                  character, as dash before 0.5.13 drops a byte from such a
-                  line in a heredoc
+                  control character but tab, is written with printf. So is a
+                  file with a line that starts with E, EO, or EOF and then a
+                  non-ASCII character, as dash before 0.5.13 drops a byte from
+                  such a line in a heredoc
   edit            a unified diff in a `patch -p1` heredoc; for a file with a
-                  carriage return, whitespace in its path, or the name -, the
-                  whole file as for write, with its line ends kept
+                  carriage return or other control character but tab, whitespace
+                  in its path, or the name -, the whole file as for write, with
+                  its line ends kept
   delete, clear   `rm -rf <dir>`, and for clear `mkdir <dir>` after it
 
 In the block of a write, edit, delete, or clear, the commands are joined with
 &&, so the block stops at its first failure, such as a diff that does not
-apply. The block's comments come before the chain, since in an interactive zsh
-a comment inside it would end it. The block of a run step is a plain command,
-since it may be expected to fail. A fence (``` or ~~~) or a < at the start of a
+apply. A block holds commands only: an interactive zsh runs a pasted comment
+line as a command. What to expect, and a note on an edit that is written as a
+whole file or changes nothing, are text above the block, with names and output
+texts as inline code; a forbidden output text is joined with "or", since any
+one of them fails the check. An edit step whose edits all change nothing has
+the note and no block. A run.shell command keeps its own # comments, with a
+note above to run `setopt interactive_comments` first in zsh. The block of a
+run step is a plain command, since it may be expected to fail. A fence (``` or ~~~) or a < at the start of a
 line of the description, after any list or quote markers, is escaped, so the
 rest of SCENARIO.md stays as it is; a < that starts an autolink, such as
 <https://...>, is left as it is.
@@ -665,11 +714,12 @@ Preconditions
 =============
 
 These are checked before the out dir is touched. Any failure means exit code 2
-and one `ERROR: ...` line on stderr; a load error is prefixed with the
-scenario's path (or stdin).
+and one `ERROR: ...` line on stderr, with nothing on stdout unless a remote was
+fetched first; a load error is prefixed with the scenario's path (or stdin).
 
   - Python 3.11 or newer.
-  - The scenario parses and every key is known; `name`, if given, is a slug
+  - The scenario, and a layout file, are UTF-8 text (from stdin too); the
+    scenario parses and every key is known; `name`, if given, is a slug
     ([A-Za-z0-9][A-Za-z0-9._-]*); every `edit` file is in the project table,
     the remote checkout, the project dir in place, or an earlier write step,
     and not under an earlier delete or clear; no `delete` or `clear` path is
@@ -699,9 +749,10 @@ Exit codes: 0 success, every check came out as expected; 1 failure, a check
 came out unexpected; 2 error, gust could not do something: bad input (a failed
 precondition, a malformed scenario, bad arguments), a step that could not be
 carried out (an edit whose text was not found, a write onto a directory, a
-delete of a file, a command whose project dir is gone), or a failed wrapper
-install. summary.json is written for run only, and there it is present
-whenever the header was printed: on exit 1, and on exit 2 after the header.
+delete of a file, a command whose project dir is gone), a failed wrapper
+install, or anything else after the header. summary.json is written for run
+only, and there it is present whenever the header was printed: on exit 1, and
+on exit 2 after the header.
 The daemon stops never change the exit code.
 """
 
@@ -828,7 +879,7 @@ class Scenario:
     files: dict[str, str]               # path -> content: the layout file's, then the scenario's own
     steps: list[Step]
     remote: Remote | None = None
-    gradle: str | None = None           # "wrapper" (the project's own ./gradlew), a version such as "9.7.1", or None
+    gradle: str | None = None           # "wrapper" (the project's own ./gradlew), a version such as "9.9.0", or None
     project: Path | None = None         # setup.project or --project, absolute: the dir used in place, with no layout
 
     def counts(self) -> dict[str, int]:
@@ -866,7 +917,7 @@ def load_scenario(text: str, base_dir: Path | None = None, default_name: str | N
     _expect_keys(setup, "setup", SETUP_KEYS)
     gradle = _optional(setup, "gradle", str, "setup")
     if gradle is not None and gradle != "wrapper" and not VERSION_RE.fullmatch(gradle):
-        raise GustError(f"setup.gradle: must be 'wrapper' or a Gradle version such as '9.7.1', got {gradle!r}")
+        raise GustError(f"setup.gradle: must be 'wrapper' or a Gradle version such as '9.9.0', got {gradle!r}")
     files, remote = _load_layout(setup.get("layout", {}), base_dir)
     project = _load_project(_optional(setup, "project", str, "setup"), base_dir, project, "layout" in setup)
 
@@ -986,6 +1037,8 @@ def _load_project(value: str | None, base_dir: Path | None, cli: Path | None, ha
         raise GustError(f"{where} and setup.layout cannot be combined: in place, the project is used as it is")
     if raw == "":                                                    # never for --project, a Path
         raise GustError(f"{where}: must not be empty")
+    if "\0" in str(raw):
+        raise GustError(f"{where}: path must not contain a NUL character")
     path = Path(os.path.expanduser(raw))                             # a leading ~ expanded, as for --gradle
     if not path.is_absolute():
         if cli is not None:
@@ -1018,6 +1071,8 @@ def _load_remote(link: str) -> Remote:
 
 def _load_base(base: str, base_dir: Path | None) -> dict[str, str]:
     """The [project] table of a layout file, which may not have a base of its own."""
+    if "\0" in base:
+        raise GustError("setup.layout.base: path must not contain a NUL character")
     path = Path(base)
     if not path.is_absolute():
         if base_dir is None:
@@ -1026,7 +1081,7 @@ def _load_base(base: str, base_dir: Path | None) -> dict[str, str]:
     if not path.is_file():
         raise GustError(f"setup.layout.base: no such file {path}")
     try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        data = tomllib.loads(_read_utf8(path, f"setup.layout.base: {path}"))
     except tomllib.TOMLDecodeError as e:
         raise GustError(f"setup.layout.base: {path} is not valid TOML: {e}") from e
     if "base" in data:
@@ -1095,13 +1150,24 @@ def _load_run(raw: object, where: str, name: str | None) -> RunStep:
     kind, value = next(iter(raw.items()))
     where = f"{where}.{kind}"
     if isinstance(value, str):
-        return RunStep(kind=kind, command=value, name=name)
+        return RunStep(kind=kind, command=_split_check(value, where, kind), name=name)
     if not isinstance(value, dict):
         raise GustError(f"{where}: must be a string or a table")
     _expect_keys(value, where, RUN_KEYS[kind])
-    command = _require(value, "args" if kind == "gradle" else "command", str, where)
+    key = "args" if kind == "gradle" else "command"
+    command = _split_check(_require(value, key, str, where), f"{where}.{key}", kind)
     expect = _load_expect(value.get("expect", "pass"), f"{where}.expect")
     return RunStep(kind=kind, command=command, expect=expect, name=name)
+
+
+def _split_check(command: str, where: str, kind: str) -> str:
+    """The command as it is, once Gradle arguments are known to split by sh's rules, as they are split on Windows."""
+    if kind == "gradle":
+        try:
+            shlex.split(command)
+        except ValueError as e:
+            raise GustError(f"{where}: cannot split {command!r} into arguments: {e}") from None
+    return command
 
 
 def _load_expect(raw: object, where: str) -> Expect:
@@ -1278,11 +1344,13 @@ def _ours_or_empty(path: Path, what: str) -> None:
         raise GustError(f"{what} is not empty and was not created by gust, so it is left alone: {path}; pass another --out or remove it")
 
 
-def fetch_remote(scenario: Scenario, out=None) -> dict | None:
-    """Fetch the remote commit unless it is cached, then check the file flow against the checkout.
+def fetch_remote(scenario: Scenario, out=None, may_fetch: bool = True) -> dict | None:
+    """Fetch the remote commit unless it is cached, check a cached checkout's HEAD and subdir, then check the file
+    flow against the checkout.
 
-    Returns the summary's remote table {"link", "checkout", "fetched"}, or None without a remote.
-    Fetch progress is printed to out, if given.
+    Returns the summary's remote table {"link", "checkout", "fetched"}, or None without a remote, or (with may_fetch
+    False, for check) for a remote not cached yet. A fetch prints its remote: and checkout: lines to out, if given,
+    ahead of it as progress; for any other case print_remote prints them with the header.
     """
     remote = scenario.remote
     if remote is None:
@@ -1290,17 +1358,21 @@ def fetch_remote(scenario: Scenario, out=None) -> dict | None:
     if shutil.which("git") is None:
         raise GustError("setup.layout.remote needs git on PATH")
     target = remote.dir
+    cached = (target / ".git").exists()
+    if not cached and target.exists():
+        raise GustError(f"checkout dir exists but is not a git checkout, so it is left alone: {target}")
+    if not cached and not may_fetch:
+        return None
     fetched = False
-    if (target / ".git").exists():
+    if cached:
         head = _git(target, "rev-parse", "HEAD").decode().strip()
         if not head.startswith(remote.sha) and not remote.sha.startswith(head):
             raise GustError(f"checkout {target} is at {head[:12]}, not {remote.sha}; delete it to refetch")
         if not remote.source.is_dir():
             raise GustError(f"setup.layout.remote: {remote.subdir!r} is not a directory in {target}")
     else:
-        if target.exists():
-            raise GustError(f"checkout dir exists but is not a git checkout, so it is left alone: {target}")
         if out is not None:
+            print(f"remote:   {remote.link}", file=out)
             print(f"checkout: {target}", file=out)
             print(f"          fetching {remote.sha} from {remote.url}", file=out)
         target.mkdir(parents=True)
@@ -1318,6 +1390,17 @@ def fetch_remote(scenario: Scenario, out=None) -> dict | None:
         fetched = True
     check_file_flow(scenario)
     return {"link": remote.link, "checkout": str(target), "fetched": fetched}
+
+
+def print_remote(scenario: Scenario, info: dict | None, out) -> None:
+    """The remote: and checkout: lines, ahead of the header, for a remote that was not fetched just now: cached, or for
+    check (info None) not cached yet."""
+    if scenario.remote is None or info is not None and info["fetched"]:
+        return                                          # no remote, or its lines came ahead of the fetch
+    if info is None:
+        print(f"remote:   {scenario.remote.link} (not cached; fetched on run)", file=out)
+    else:
+        print(f"remote:   {scenario.remote.link}\ncheckout: {info['checkout']} (cached)", file=out)
 
 
 def _git(cwd: Path, *args: str, check: bool = True, input: bytes | None = None) -> bytes | None:
@@ -1461,10 +1544,12 @@ def settle_gradle(scenario: Scenario, cli_value: str | None, root: Path | None, 
     refused then, and the scenario's version means the wrapper installed at setup, probed like any
     binary.
     """
-    def exists(rel: str) -> bool:
-        return rel in scenario.files or (root is not None and (root / rel).is_file())
-
     unfetched = root is None and scenario.remote is not None              # check with an unfetched remote
+
+    def exists(rel: str) -> bool:
+        """Whether the project has that file; with an unfetched remote that is known on run only, so it counts."""
+        return unfetched or rel in scenario.files or (root is not None and (root / rel).is_file())
+
     if cli_value is None:
         source = "scenario" if scenario.gradle is not None else "default"
         install = scenario.gradle if scenario.gradle not in (None, "wrapper") else None
@@ -1533,7 +1618,7 @@ def _settle_binary(value: str, exists) -> tuple[str, str | None]:
         return str(local), None
     if VERSION_RE.fullmatch(value):
         return WRAPPER, value
-    raise GustError(f"--gradle {value!r}: not found on PATH and not a Gradle version such as 9.7.1")
+    raise GustError(f"--gradle {value!r}: not found on PATH and not a Gradle version such as 9.9.0")
 
 
 def _executable(path: Path) -> bool:
@@ -1757,29 +1842,34 @@ def shared_home(gradle_user_home: Path | None) -> Path:
     return home
 
 
-def begin(run: Run, needed: bool) -> RunSummary:
-    """What comes before the steps, for run and setup: the remote, the Gradle choice, the layout, the header,
-    and the wrapper install. Returns the summary, with result "error" when the install failed.
+def begin(run: Run, needed: bool, then=None) -> RunSummary:
+    """For run and setup: the remote, the Gradle choice, the layout, the header, the wrapper install, and then
+    then(summary), the steps of a run. Returns the summary, with result "error" when the install failed.
+
+    Before the header, a failure raises. Once it is printed, a GustError or OSError ends the summary as an error, with
+    an ERROR: line on the console, so the run still ends in its result: and out: lines and summary.json.
     """
     scenario, out = run.scenario, run.out
-    remote_info = None
-    if scenario.remote is not None:
-        print(f"remote:   {scenario.remote.link}", file=out)
-        remote_info = fetch_remote(scenario, out)
-        if not remote_info["fetched"]:
-            print(f"checkout: {scenario.remote.dir} (cached)", file=out)
+    remote_info = fetch_remote(scenario, out)
     root = scenario.remote.source if scenario.remote else scenario.project
     run.choice = settle_gradle(scenario, run.gradle, root, run.user_home, needed=needed, may_install=True)
     lay_out(scenario, run.out_dir)
+    print_remote(scenario, remote_info, out)
     print_header(scenario, run.out_dir, run.user_home, run.choice, out)
     summary = RunSummary(scenario=scenario.name, description=scenario.description, out=str(run.out_dir),
                          project=str(run.project), gradle=run.choice.binary, gradle_version=run.choice.version,
                          gradle_args=run.gradle_args or None, gradle_user_home=str(run.user_home), remote=remote_info)
-    if run.choice.install:
-        summary.install = _install_wrapper(run)
-        if summary.install["exit_code"] != 0:                            # a failed install ends the run as an error
-            summary.result = "error"
-            summary.error = f"wrapper install failed: exit={summary.install['exit_code']} -> {INSTALL_LOG}"
+    try:
+        if run.choice.install:
+            summary.install = _install_wrapper(run)
+            if summary.install["exit_code"] != 0:                        # a failed install ends the run as an error
+                summary.result = "error"
+                summary.error = f"wrapper install failed: exit={summary.install['exit_code']} -> {INSTALL_LOG}"
+        if then is not None and summary.result != "error":               # a failed install: no step runs
+            then(summary)
+    except (GustError, OSError) as e:
+        run.error(str(e))
+        summary.result, summary.error = "error", str(e)
     return summary
 
 
@@ -1790,8 +1880,8 @@ def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
     """
     steps = run.scenario.steps
     _check_shell(run.scenario)
-    summary = begin(run, needed=stop_daemons or run.scenario.counts()["gradle"] > 0)
-    if summary.result != "error":                                        # a failed install: no step runs
+
+    def run_steps(summary: RunSummary) -> None:
         if stop_daemons:
             summary.stop_daemons = {"before": _stop_daemons(run, "[BEF]", "stop-daemons-before.log", full=False)}
         for i, step in enumerate(steps, start=1):
@@ -1802,8 +1892,10 @@ def run_scenario(run: Run, stop_daemons: bool = True) -> RunSummary:
                 summary.result = "failure" if result.result == "unexpected" else "error"
                 summary.error = result.error                             # None for an unexpected check
                 break
-        if stop_daemons:
-            summary.stop_daemons["after"] = _stop_daemons(run, "[AFT]", "stop-daemons-after.log", full=False)
+
+    summary = begin(run, needed=stop_daemons or run.scenario.counts()["gradle"] > 0, then=run_steps)
+    if summary.stop_daemons is not None:                                 # the steps began: after an error in them too
+        summary.stop_daemons["after"] = _stop_daemons(run, "[AFT]", "stop-daemons-after.log", full=False)
     (run.out_dir / "summary.json").write_text(summary.to_json() + "\n", encoding="utf-8", newline="")
     word = paint({"success": SUCCESS, "failure": FAILURE, "error": ERROR}[summary.result], run.color)
     print(f"result: {word} ({len(summary.steps)}/{len(steps)} steps ran)", file=run.out)
@@ -1921,14 +2013,18 @@ def _install_wrapper(run: Run) -> dict:
     """Run `gradle wrapper --gradle-version <version>` in the project, with gradle from PATH: the [WRP] block.
 
     Returns {"version", "log", "exit_code"}. A failure does not raise: it is an ERROR: line, the log's
-    tail unless the output was shown, and a nonzero exit_code.
+    tail unless the output was shown, and a nonzero exit_code. A command that cannot start raises a GustError, which
+    begin reports.
     """
     version = run.choice.version
     command = GradleCommand("gradle", f"wrapper --gradle-version {shlex.quote(version)} --no-daemon", run.user_home)
     print(f"{WRAPPER_LABEL} Install Gradle wrapper {version}", file=run.out)
     print(f"$ {command.shown}", file=run.out)
-    exit_code, duration = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ),
-                                      run.out_dir / INSTALL_LOG, run.out if run.show_output else None)
+    try:
+        exit_code, duration = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ),
+                                          run.out_dir / INSTALL_LOG, run.out if run.show_output else None)
+    except OSError as e:
+        raise GustError(cannot_run(command.shown, e)) from e
     line = f"exit={exit_code} in {duration:.1f}s -> {INSTALL_LOG}"
     if exit_code != 0:
         run.error(line)
@@ -2034,7 +2130,7 @@ def flatten(text: str, source: str, base_dir: Path | None = None, default_name: 
     if "base" in layout:
         del layout["base"]
         layout["project"] = scenario.files          # merged by _load_layout, so the files are the ones laid out by setup
-    lines = text.splitlines(keepends=True)
+    lines = re.findall(r"[^\n]*\n|[^\n]+", text)       # at \n only: U+2028 and its kind end no TOML line
     n = next((i for i, line in enumerate(lines) if line.strip() and not line.lstrip().startswith("#")), len(lines))
     lead = "".join(lines[:n]) if any(line.strip() for line in lines[:n]) else ""
     flat = lead + to_toml(data)
@@ -2294,7 +2390,8 @@ def _write_zip(target: Path, top: str, files: dict[str, tuple[int, bytes]]) -> N
 
 def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_version: str | None) -> str:
     """SCENARIO.md, the scenario written out as steps to run by hand: its name, description, and Gradle version, then
-    each step as a shell snippet under a `### N. <name>` heading. Expectations are comments, ./gradlew is gradle,
+    each step as a shell snippet under a `### N. <name>` heading. A block holds commands only: what to expect, and a
+    note on how a file is written, is text above it, since an interactive zsh runs a pasted comment. ./gradlew is gradle,
     writes are heredocs (printf where a heredoc cannot hold the content), edits are diffs for patch -p1, and deletes
     and clears are rm -rf.
 
@@ -2307,7 +2404,8 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
         out += [_DESCRIPTION_ESCAPE_RE.sub(r"\1\\\2", _visible(scenario.description)), ""]
     out += [f"Needs Gradle{' ' + gradle_version if gradle_version else ''}, as `gradle` on PATH.", "",
             "## Steps", "",
-            "Run each block from the directory this file is in, in order. What to expect from a block is in its comments.",
+            "Run each `sh` block from the directory this file is in, in order. What to expect from a block is in the "
+            "text above it.",
             ""]
     if any(isinstance(s, RunStep) and s.kind == "shell" and _GRADLE_VAR_RE.search(s.command) for s in scenario.steps):
         out += ["In the shell steps, Gradle is `$GRADLE`, and any extra arguments are in `$GRADLE_ARGS`. Set them first:",
@@ -2316,6 +2414,7 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
     dirs = {d for rel in files for d in _parents(rel)}
     for i, step in enumerate(scenario.steps, start=1):
         body: list[str] = []
+        notes: list[str] = []                                # Markdown paragraphs above the block
         commands: list[Command] = []                         # a file step's commands, joined with && below
         label = step.name
         if isinstance(step, RunStep):
@@ -2327,7 +2426,10 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
                     raise GustError(f"steps[{i}].run.shell: the command uses the wrapper ({m[0]!r}), which is left out "
                                     f"of the zip")
             label = label or f"Run: {command}"
-            body += _expect_comments(step.expect) + [command]
+            if step.kind == "shell" and _has_comment(command):
+                notes.append("The command has a `#` comment; in zsh, run `setopt interactive_comments` first.")
+            notes += _expected(step.expect)
+            body.append(command)
         elif isinstance(step, WriteStep):
             for rel, content in step.files.items():
                 if _is_scenario_md(rel):
@@ -2352,7 +2454,9 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
                     raise GustError(f"{where}.file: {edit.file!r} is not UTF-8 text") from None
                 except StepError as e:
                     raise GustError(f"{where}.replace: {e}") from None
-                commands += _sh_edit(rel, before, after)
+                note, edit_commands = _sh_edit(rel, before, after)
+                notes += note
+                commands += edit_commands
                 files[rel] = after.encode("utf-8")
         else:
             if _is_scenario_md(step.dir):
@@ -2366,22 +2470,20 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
         if "\n" in heading:
             heading = heading.partition("\n")[0].rstrip() + " ..."
         fence = "`" * max([3] + [len(run) + 1 for run in re.findall(r"`{3,}", "\n".join(body))])
-        out += [f"### {i}. {heading}", "", fence + "sh", *body, fence, ""]
+        block = [fence + "sh", *body, fence, ""] if body else []   # an edit step of no-op edits has notes only
+        out += [f"### {i}. {heading}", "", *(line for note in notes for line in (note, "")), *block]
     return "\n".join(out).rstrip("\n") + "\n"
 
 
-Command = tuple[list[str], int | None]   # shell lines, and the one that takes the && after the command; None: a comment
+Command = tuple[list[str], int]   # shell lines, and the one that takes the && after the command
 
 
 def _chained(commands: list[Command]) -> list[str]:
-    """The lines of the commands, joined with &&, so that the block stops at the first failure. The comments come
-    first: one inside the chain ends it in an interactive zsh, where a comment is a command."""
-    comments = [line for command, at in commands if at is None for line in command]
-    commands = [c for c in commands if c[1] is not None]
+    """The lines of the commands, joined with &&, so that the block stops at the first failure."""
     lines = []
     for k, (command, at) in enumerate(commands):
         lines += [line + " &&" if k < len(commands) - 1 and n == at else line for n, line in enumerate(command)]
-    return comments + lines
+    return lines
 
 
 def _visible(text: str) -> str:
@@ -2394,14 +2496,52 @@ def _sh_path(rel: str) -> str:
     return shlex.quote("./" + rel if rel.startswith("-") else rel)
 
 
-def _expect_comments(expect: Expect) -> list[str]:
-    """What a run step must do, as shell comments; nothing for a plain pass."""
-    lines = ["# expected to fail"] if expect.exit == "fail" else []
-    for what, texts in (("expected in the output", expect.output), ("not expected in the output", expect.no_output)):
-        for text in texts:
-            first, *rest = _visible(text).split("\n")
-            lines += [f"# {what}: {first}", *(f"#   {line}" for line in rest)]
-    return lines
+def _expected(expect: Expect) -> list[str]:
+    """What a run step must do, as Markdown paragraphs: one sentence, then a block for each output text of more than one
+    line, which inline code cannot hold. Nothing for a plain pass."""
+    if expect == Expect():
+        return []
+    texts: list[str] = []                                    # the texts of more than one line, numbered in the sentence
+
+    def show(text: str) -> str:
+        if "\n" not in text:
+            return _code(_visible(text))
+        texts.append(_visible(text))
+        return f"text {len(texts)} below"
+    sentence = f"Expected: {'fails' if expect.exit == 'fail' else 'passes'}"
+    if expect.output:
+        sentence += ", and the output contains " + _and([show(t) for t in expect.output])
+    if expect.no_output:
+        sentence += ((", but not " if expect.output else ", and the output does not contain ")
+                     + _and([show(t) for t in expect.no_output], "or"))   # any one of them fails the check
+    blocks = []
+    for k, text in enumerate(texts, start=1):
+        fence = "`" * max([3] + [len(run) + 1 for run in re.findall(r"`{3,}", text)])
+        blocks.append(f"Text {k}:\n\n{fence}text\n{text}\n{fence}")
+    return [sentence + ".", *blocks]
+
+
+def _has_comment(command: str) -> bool:
+    """Whether a shell command has a # comment, which an interactive zsh with default options runs as words: a word
+    that starts with #, outside quotes. A # inside a word or quotes, as in a#b, $#, or '#1', starts none."""
+    words = shlex.shlex(command, posix=False)                 # quotes kept on the words, so a quoted # stays inside
+    words.commenters, words.whitespace_split = "", True
+    try:
+        return any(word.startswith("#") for word in words)
+    except ValueError:                                       # unbalanced quotes: a # may still start a comment
+        return "#" in command
+
+
+def _and(items: list[str], word: str = "and") -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + f" {word} " + items[-1]
+
+
+def _code(text: str) -> str:
+    """text as Markdown inline code: in a run of backticks longer than any in it, with a space inside each end where
+    the text starts or ends with a backtick, or with spaces on both ends, which would be taken off."""
+    ticks = "`" * max([1] + [len(run) + 1 for run in re.findall(r"`+", text)])
+    pad = " " if text[:1] == "`" or text[-1:] == "`" or (text[:1] == " " and text[-1:] == " " and text.strip()) else ""
+    return f"{ticks}{pad}{text}{pad}{ticks}"
 
 
 def _sh_write(rel: str, content: str) -> Command:
@@ -2433,22 +2573,22 @@ def _safe_delimiter(delimiter: str, lines: list[str]) -> bool:
         for line in lines for k in range(1, len(delimiter) + 1))
 
 
-def _sh_edit(rel: str, before: str, after: str) -> list[Command]:
-    """Shell commands for turning before into after at rel: a unified diff for patch -p1, or the whole file written
-    anew where a diff will not do: a control character such as a carriage return, whitespace in the path, or a file
-    named -, which BSD patch reads as stdout."""
-    name = _visible(rel).replace("\n", "\\n")                 # on one line, so no part of the name runs
+def _sh_edit(rel: str, before: str, after: str) -> tuple[list[str], list[Command]]:
+    """A note for the text above the block, if any, and the shell commands for turning before into after at rel: a
+    unified diff for patch -p1, or the whole file written anew where a diff will not do: a control character such as a
+    carriage return, whitespace in the path, or a file named -, which BSD patch reads as stdout."""
+    name = _code(_visible(rel).replace("\n", "\\n"))          # on one line
     if before == after:
-        return [([f"# {name} stays as it is: its text is replaced with the same text"], None)]
+        return [f"The file {name} stays as it is: its text is replaced with the same text."], []
     if _CONTROL_RE.search(before + after) or re.search(r"\s", rel) or rel == "-":
-        return [([f"# {name}: the whole file, written anew instead of a diff for patch"], None), _sh_write(rel, after)]
+        return [f"The file {name} is written anew as a whole, instead of with a diff for patch."], [_sh_write(rel, after)]
     diff = []
     lines = [re.findall(r"[^\n]*\n|[^\n]+", text) for text in (before, after)]   # split at LF only, as patch does
     for k, line in enumerate(difflib.unified_diff(*lines, f"a/{rel}", f"b/{rel}")):
         if k < 2:                                             # the --- and +++ headers; any later line is content
             line = line.rstrip("\t\n") + "\n"
         diff.append(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n")
-    return [(["patch -p1 <<'EOF'", *"".join(diff).rstrip("\n").split("\n"), "EOF"], 0)]
+    return [], [(["patch -p1 <<'EOF'", *"".join(diff).rstrip("\n").split("\n"), "EOF"], 0)]
 
 
 # --------------------------------------------------------------------------- cli
@@ -2463,7 +2603,7 @@ def _tail_arg(value: str) -> int:
 
 PRECEDENCE = f"default: setup.gradle, else the project's {WRAPPER}, else gradle from PATH"
 BINARY = f"a Gradle binary, as a name on PATH or in the working directory, or as a path ({WRAPPER} is relative to the project)"
-GRADLE_HELP = (f"{BINARY}, or a version such as 9.7.1, whose wrapper is installed first with gradle from PATH "
+GRADLE_HELP = (f"{BINARY}, or a version such as 9.9.0, whose wrapper is installed first with gradle from PATH "
                f"(the layout needs a settings file); {PRECEDENCE}")
 BINARY_HELP = f"{BINARY}; no version, since the project is set up already; {PRECEDENCE}"
 TMP_HELP = (f"put the out dir at {TMP_SHAPE}; "
@@ -2579,6 +2719,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):        # a character the console cannot show is escaped, never a traceback
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     gradle_args: list[str] = []
@@ -2656,11 +2799,23 @@ def read_source(args) -> tuple[str, str, dict]:
     if str(args.scenario) == "-":
         if sys.stdin.isatty():
             raise GustError("SCENARIO is '-' but nothing is piped on stdin")
-        return sys.stdin.read(), "stdin", {"base_dir": Path.cwd()}
+        try:
+            text = sys.stdin.buffer.read().decode("utf-8")   # as a file is read, whatever the locale's encoding
+        except UnicodeDecodeError:
+            raise GustError("stdin is not UTF-8 text") from None
+        return text.replace("\r\n", "\n").replace("\r", "\n"), "stdin", {"base_dir": Path.cwd()}   # newlines as in text mode
     if not args.scenario.is_file():
         raise GustError(f"scenario file not found: {args.scenario}")
-    return (args.scenario.read_text(encoding="utf-8"), str(args.scenario),
+    return (_read_utf8(args.scenario, str(args.scenario)), str(args.scenario),
             {"base_dir": args.scenario.resolve().parent, "default_name": args.scenario.stem})
+
+
+def _read_utf8(path: Path, label: str) -> str:
+    """The file's text; GustError, with label, when it is not UTF-8 (Latin-1, say, or UTF-16 from PowerShell 5)."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise GustError(f"{label} is not UTF-8 text") from None
 
 
 def _load_named(text: str, source: str, **kwargs) -> Scenario:
@@ -2674,17 +2829,14 @@ def _load_named(text: str, source: str, **kwargs) -> Scenario:
 def _cli_check(scenario: Scenario, gradle: str | None, user_home: Path, as_json: bool) -> int:
     """Validate the scenario and settle the Gradle binary as run would, without setting anything up."""
     remote, root = scenario.remote, scenario.project
-    if remote is not None:
-        cached = (remote.dir / ".git").exists()
-        if cached:
-            root = remote.source
-            check_file_flow(scenario)
-            print(f"remote:   {remote.link}\ncheckout: {remote.dir} (cached)")
-        else:
-            print(f"remote:   {remote.link} (not cached; fetched on run)")
+    remote_info = fetch_remote(scenario, may_fetch=False)
+    cached = remote_info is not None
+    if cached:
+        root = remote.source
     _check_shell(scenario)
     counts = scenario.counts()
     choice = settle_gradle(scenario, gradle, root, user_home, needed=counts["gradle"] > 0, may_install=True)
+    print_remote(scenario, remote_info, sys.stdout)
     print_header(scenario, None, user_home, choice, sys.stdout, description=True)
     print(f"steps: {len(scenario.steps)} ({', '.join(f'{n} {kind}' for kind, n in counts.items())})")
     if as_json:
@@ -2695,7 +2847,7 @@ def _cli_check(scenario: Scenario, gradle: str | None, user_home: Path, as_json:
         if scenario.project is not None:
             summary["project"] = str(scenario.project)
         summary["result"] = "success"
-        print(json.dumps(summary))
+        print(json.dumps({k: v for k, v in summary.items() if v}))      # no empty keys, as in run's summary
     return EXIT_OK
 
 
@@ -2721,7 +2873,7 @@ def _cli_zip(args) -> int:
     """Write the scenario zip and print its path. A failure raises, for main's one `ERROR: ...` line on stderr, exit
     code 2."""
     if args.gradle is not None and not VERSION_RE.fullmatch(args.gradle):
-        raise GustError(f"--gradle {args.gradle!r}: a Gradle version such as 9.7.1 is expected "
+        raise GustError(f"--gradle {args.gradle!r}: a Gradle version such as 9.9.0 is expected "
                         f"here, for {SCENARIO_MD}; no Gradle runs for a zip, so a binary is of no use")
     text, source, kwargs = read_source(args)
     scenario = _load_named(text, source, **kwargs)
