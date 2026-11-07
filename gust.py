@@ -1912,14 +1912,18 @@ def _install_wrapper(run: Run) -> dict:
     """Run `gradle wrapper --gradle-version <version>` in the project, with gradle from PATH: the [WRP] block.
 
     Returns {"version", "log", "exit_code"}. A failure does not raise: it is an ERROR: line, the log's
-    tail unless the output was shown, and a nonzero exit_code.
+    tail unless the output was shown, and a nonzero exit_code. A command that cannot start raises a GustError, which
+    begin reports.
     """
     version = run.choice.version
     command = GradleCommand("gradle", f"wrapper --gradle-version {shlex.quote(version)} --no-daemon", run.user_home)
     print(f"{WRAPPER_LABEL} Install Gradle wrapper {version}", file=run.out)
     print(f"$ {command.shown}", file=run.out)
-    exit_code, duration = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ),
-                                      run.out_dir / INSTALL_LOG, run.out if run.show_output else None)
+    try:
+        exit_code, duration = _run_logged(gradle_argv(command.full, run.project), run.project, dict(os.environ),
+                                          run.out_dir / INSTALL_LOG, run.out if run.show_output else None)
+    except OSError as e:
+        raise GustError(cannot_run(command.shown, e)) from e
     line = f"exit={exit_code} in {duration:.1f}s -> {INSTALL_LOG}"
     if exit_code != 0:
         run.error(line)

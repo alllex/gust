@@ -859,14 +859,14 @@ class LayoutRemoteTest(GustCase):
         with mock.patch.object(gs, "_run_logged", side_effect=OSError(2, "No such file or directory", "gradle")):
             code, out, err = self.cli("run", str(s), "--json")
         self.assertEqual((code, err), (gs.EXIT_ERROR, ""))                                # after the header: on stdout
-        self.assertIn("ERROR: [Errno 2] No such file or directory: 'gradle'\nresult: ERROR (0/1 steps ran)\n"
-                      f"out:      {self.tmp / 's.out'}\n", out)
+        message = "cannot run gradle wrapper --gradle-version 9.7.1 --no-daemon: No such file or directory: gradle"
+        self.assertIn(f"ERROR: {message}\nresult: ERROR (0/1 steps ran)\nout:      {self.tmp / 's.out'}\n", out)
         summary = json.loads((self.tmp / "s.out" / "summary.json").read_text())
-        self.assertEqual((summary["result"], summary["error"]), ("error", "[Errno 2] No such file or directory: 'gradle'"))
+        self.assertEqual((summary["result"], summary["error"]), ("error", message))
         with mock.patch.object(gs, "_run_logged", side_effect=OSError(2, "No such file or directory", "gradle")):
             code, out, err = self.cli("setup", str(s))
         self.assertEqual((code, err), (gs.EXIT_ERROR, ""))
-        self.assertTrue(out.endswith(f"ERROR: [Errno 2] No such file or directory: 'gradle'\nresult: ERROR\n"
+        self.assertTrue(out.endswith(f"ERROR: {message}\nresult: ERROR\n"
                                      f"out:      {self.tmp / 's.out'}\n"), out[-200:])
 
     def test_cli_version_values(self):
