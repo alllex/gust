@@ -352,7 +352,8 @@ Commands
   check SCENARIO [--gradle BIN|VERSION] [--gradle-user-home DIR] [--project DIR] [--json]
                                   validate the scenario and settle the Gradle binary as run would,
                                   with nothing set up, installed, or fetched (an uncached remote is
-                                  noted). The only thing written is what the --version probe leaves
+                                  noted, a cached one checked as run checks it: its HEAD, its
+                                  subdirectory, the file flow). The only thing written is what the --version probe leaves
                                   in the Gradle user home. Output: the header with the description
                                   under scenario:, then `steps: N (K gradle, L shell, M write,
                                   P edit, Q delete, R clear)`, or the error. Worth running before
@@ -424,8 +425,9 @@ Console
 
 Once the preconditions pass, a header is printed: scenario:, out:, project:
 (in place only), home:, gradle:. With a remote, the remote: and checkout: lines
-come first, while the checkout is fetched or found in the cache. Then come
-blocks, each a label line and a result line:
+come first: ahead of a fetch, as its progress, or for a cached checkout once its
+HEAD, its subdirectory, and the file flow are checked, so a failed check leaves
+nothing on stdout. Then come blocks, each a label line and a result line:
 
   [WRP] Install Gradle wrapper 9.7.1     a `$ <command>` line, the wrapper task's output with
                                          --show-output, then `exit=0 in 3.1s -> install-wrapper.log`.
@@ -1224,18 +1226,24 @@ def _ours_or_empty(path: Path, what: str) -> None:
         raise GustError(f"{what} is not empty and was not created by gust, so it is left alone: {path}; pass another --out or remove it")
 
 
-def fetch_remote(scenario: Scenario, out=None) -> dict | None:
-    """Fetch the remote commit unless it is cached, then check the file flow against the checkout.
+def fetch_remote(scenario: Scenario, out=None, may_fetch: bool = True) -> dict | None:
+    """Fetch the remote commit unless it is cached, check a cached checkout's HEAD and subdir, then check the file
+    flow against the checkout.
 
-    Returns the summary's remote table {"link", "checkout", "fetched"}, or None without a remote.
-    Fetch progress is printed to out, if given.
+    Returns the summary's remote table {"link", "checkout", "fetched"}, or None without a remote, or (with may_fetch
+    False, for check) for a remote not cached yet. With out, the remote: and checkout: lines are printed there: for a
+    cached checkout once every check has passed, for a fetch ahead of it as progress.
     """
     remote = scenario.remote
     if remote is None:
         return None
+    target = remote.dir
+    if not may_fetch and not (target / ".git").exists():
+        if out is not None:
+            print(f"remote:   {remote.link} (not cached; fetched on run)", file=out)
+        return None
     if shutil.which("git") is None:
         raise GustError("setup.layout.remote needs git on PATH")
-    target = remote.dir
     fetched = False
     if (target / ".git").exists():
         head = _git(target, "rev-parse", "HEAD").decode().strip()
@@ -1247,6 +1255,7 @@ def fetch_remote(scenario: Scenario, out=None) -> dict | None:
         if target.exists():
             raise GustError(f"checkout dir exists but is not a git checkout, so it is left alone: {target}")
         if out is not None:
+            print(f"remote:   {remote.link}", file=out)
             print(f"checkout: {target}", file=out)
             print(f"          fetching {remote.sha} from {remote.url}", file=out)
         target.mkdir(parents=True)
@@ -1263,6 +1272,8 @@ def fetch_remote(scenario: Scenario, out=None) -> dict | None:
             raise
         fetched = True
     check_file_flow(scenario)
+    if out is not None and not fetched:
+        print(f"remote:   {remote.link}\ncheckout: {target} (cached)", file=out)
     return {"link": remote.link, "checkout": str(target), "fetched": fetched}
 
 
@@ -1711,12 +1722,7 @@ def begin(run: Run, needed: bool, then=None) -> RunSummary:
     an ERROR: line on the console, so the run still ends in its result: and out: lines and summary.json.
     """
     scenario, out = run.scenario, run.out
-    remote_info = None
-    if scenario.remote is not None:
-        print(f"remote:   {scenario.remote.link}", file=out)
-        remote_info = fetch_remote(scenario, out)
-        if not remote_info["fetched"]:
-            print(f"checkout: {scenario.remote.dir} (cached)", file=out)
+    remote_info = fetch_remote(scenario, out)
     root = scenario.remote.source if scenario.remote else scenario.project
     run.choice = settle_gradle(scenario, run.gradle, root, run.user_home, needed=needed, may_install=True)
     lay_out(scenario, run.out_dir)
@@ -2620,14 +2626,9 @@ def _load_named(text: str, source: str, **kwargs) -> Scenario:
 def _cli_check(scenario: Scenario, gradle: str | None, user_home: Path, as_json: bool) -> int:
     """Validate the scenario and settle the Gradle binary as run would, without setting anything up."""
     remote, root = scenario.remote, scenario.project
-    if remote is not None:
-        cached = (remote.dir / ".git").exists()
-        if cached:
-            root = remote.source
-            check_file_flow(scenario)
-            print(f"remote:   {remote.link}\ncheckout: {remote.dir} (cached)")
-        else:
-            print(f"remote:   {remote.link} (not cached; fetched on run)")
+    cached = fetch_remote(scenario, sys.stdout, may_fetch=False) is not None
+    if cached:
+        root = remote.source
     _check_shell(scenario)
     counts = scenario.counts()
     choice = settle_gradle(scenario, gradle, root, user_home, needed=counts["gradle"] > 0, may_install=True)

@@ -642,6 +642,27 @@ class LayoutRemoteTest(GustCase):
             gs.fetch_remote(junk, out=self.out)
         self.assertIn("not a git checkout, so it is left alone", str(cm.exception))
 
+    def test_a_bad_cached_checkout_leaves_nothing_on_stdout(self):
+        good = self.write(f'setup.layout.remote = "{self.url}#{self.sha}"')
+        self.assertEqual(self.cli("run", str(good), "--keep-daemons")[0], gs.EXIT_OK)    # cached now
+        checkout = gs.load_scenario(good.read_text(), base_dir=self.tmp).remote.dir
+        # check verifies the cached checkout's HEAD, as run does
+        other = self.scenario_file(f'setup.layout.remote = "{self.url}#0123abcd"\n[[steps]]\nrun.shell = "true"\n', "other.toml")
+        shutil.copytree(checkout, gs.load_scenario(other.read_text(), base_dir=self.tmp).remote.dir, symlinks=True)
+        for command in ("check", "run"):
+            with self.subTest(command=command):
+                code, out, err = self.cli(command, str(other))
+                self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
+                self.assertIn(", not 0123abcd; delete it to refetch", err)
+        # a file flow that fails against the checkout prints no remote: line first
+        missing = self.write(f'setup.layout.remote = "{self.url}#{self.sha}"',
+                             '[[steps]]\nedit = [{ file = "missing.txt", replace = "a", with = "b" }]\n')
+        for command in ("check", "run"):
+            with self.subTest(command=command):
+                code, out, err = self.cli(command, str(missing))
+                self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
+                self.assertIn("'missing.txt' is not in the layout", err)
+
     def test_gradle_wrapper_field(self):
         scenario = self.load(f'setup.gradle = "wrapper"\nsetup.layout.remote = "{self.url}#{self.sha}"',
                              '[[steps]]\nrun.gradle = { args = "help", expect = { output = ["gradlew help"] } }\n')
