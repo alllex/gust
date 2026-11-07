@@ -421,6 +421,12 @@ class LayoutBaseTest(GustCase):
     def load(self, text, base_dir=None):
         return gs.load_scenario(text, base_dir=self.tmp if base_dir is None else base_dir)
 
+    def test_a_base_that_is_not_utf8_is_refused(self):
+        self.base.write_bytes('[project]\n"a.txt" = "caf\u00e9"\n'.encode("latin-1"))
+        with self.assertRaises(gs.GustError) as cm:
+            self.load('setup.layout.base = "layouts/java.toml"\n[[steps]]\nrun.shell = "true"\n')
+        self.assertEqual(str(cm.exception), f"setup.layout.base: {self.base} is not UTF-8 text")
+
     def test_base_files_merged_and_overwritten(self):
         s = self.load("""
 name = "x"
@@ -689,6 +695,15 @@ class LayoutRemoteTest(GustCase):
                 code, out, err = self.cli(command, str(s))
                 self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
                 self.assertIn("is not a git checkout, so it is left alone", err)
+
+    def test_check_verifies_a_cached_checkout_has_the_subdir(self):
+        s = self.write(f'setup.layout.remote = "{self.url}#{self.sha}"')
+        self.assertEqual(self.cli("run", str(s), "--keep-daemons")[0], gs.EXIT_OK)       # cached now
+        checkout = gs.load_scenario(s.read_text(), base_dir=self.tmp).remote.dir
+        s = self.write(f'setup.layout.remote = "{self.url}#{self.sha}/nosuch"')            # the same checkout
+        code, out, err = self.cli("check", str(s))
+        self.assertEqual((code, out), (gs.EXIT_ERROR, ""))
+        self.assertIn(f"setup.layout.remote: 'nosuch' is not a directory in {checkout}", err)
 
     def test_check_takes_a_project_binary_from_an_uncached_remote(self):
         s = self.write(f'setup.layout.remote = "{self.url}#{self.sha}"', '[[steps]]\nrun.gradle = "help"\n')
@@ -1339,6 +1354,13 @@ run.shell = "grep -q four f.txt && grep -q five g.txt"
             self.assertNotIn(gone, printed)
         self.assertNotIn("pass", printed.split("gradle:")[1])                     # no pass/fail word on the console
         self.assertEqual(json.loads((self.out_dir / "summary.json").read_text())["description"], "Two lines of\nnarrative.")
+
+    def test_an_error_inside_the_steps_still_stops_the_daemons_after(self):
+        with mock.patch.object(gs, "_change_files", side_effect=gs.GustError("boom")):
+            summary = self.run_text('name = "e"\n[[steps]]\nwrite."a.txt" = "a"\n', stop_daemons=True)
+        self.assertEqual((summary.result, summary.error), ("error", "boom"))
+        self.assertIn("[1/1] Write: a.txt\nERROR: boom\n[AFT] Stop Gradle daemons -> stop-daemons-after.log\n"
+                      "result: ERROR (0/1 steps ran)\n", self.out.getvalue())             # the error first, then the stop
 
     def test_stops_at_unexpected_check_and_shows_tail(self):
         summary = self.run_text("""
