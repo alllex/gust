@@ -146,12 +146,13 @@ top level
 setup                               what `gust setup` produces, and the first part of `run`
   gradle        string   optional   the Gradle the steps run with, unless --gradle is given:
                                     "wrapper" for the project's own ./gradlew, which must be in the
-                                    remote checkout (the project table cannot hold its jar); or a
-                                    version such as "9.7.1", whose wrapper is installed into the
-                                    project first (see Gradle version; the layout needs a settings
-                                    file). Default: the project's own ./gradlew when the checkout,
-                                    the project dir in place, or, once set up, the project has an
-                                    executable one, else gradle from PATH.
+                                    remote checkout or the project dir in place (the project table
+                                    cannot hold its jar); or a version such as "9.7.1", whose
+                                    wrapper is installed into the project first (see Gradle
+                                    version; the layout needs a settings file). Default: the
+                                    project's own ./gradlew when the checkout, the project dir in
+                                    place, or, once set up, the project has an executable one, else
+                                    gradle from PATH.
   layout        table    optional   the project's files; see setup.layout
   project       string   optional   an existing project dir, used in place instead of a layout;
                                     see In place. Relative to the scenario file or absolute
@@ -220,7 +221,7 @@ steps[].run.*.expect                what must hold after the step; every listed 
   shorthand     expect = "fail"       means { exit = "fail" }
   exit          string   optional   "pass" (default, exit code 0) or "fail" (any other exit code)
   output        array    optional   strings that must each appear in the step's combined output,
-                                    where a CRLF line end is read as LF
+                                    where a CRLF or CR line end is read as LF
   no_output     array    optional   strings that must not appear in it
 
 steps[].edit[]
@@ -257,6 +258,7 @@ after the scenario's name for stdin:
                          with --trace: the build operation trace of run.gradle step NN
   <out>/stop-daemons-before.log, <out>/stop-daemons-after.log
                          output of the daemon stops around the steps
+  <out>/stop-daemons.log output of the stop-daemons command
   <out>/summary.json     the summary of the run
   <out>/.gust-run        marker: the directory was made by gust and may be replaced or
                          removed on a later run
@@ -326,7 +328,7 @@ distributions and dependencies again.
 Gradle user home
 ================
 
-Every Gradle invocation from gust (run.gradle steps, both daemon stops, the
+Every Gradle invocation from gust (run.gradle steps, the daemon stops, the
 wrapper install, the version probe) starts with
 
   --gradle-user-home <.gust/shared-gradle-user-home>
@@ -356,6 +358,12 @@ Commands
                                   under scenario:, then `steps: N (K gradle, L shell, M write,
                                   P edit, Q delete, R clear)`, or the error. Worth running before
                                   a long run.
+                                  With a remote, the header follows `remote:   <link>` and
+                                  `checkout: <dir> (cached)`, or, when the remote is not in
+                                  .gust/remotes yet, the one line `remote:   <link> (not cached;
+                                  fetched on run)`; then nothing that needs the commit's files is
+                                  checked, such as the files of edit and the paths of delete and
+                                  clear, until the remote is fetched.
                                   The --json summary is {scenario, description, gradle,
                                   gradle_version, steps (a count), step_counts, remote {link,
                                   cached} when there is one, project when in place, result}, with
@@ -385,10 +393,12 @@ With --project DIR, an existing project dir is used in place (see In place).
 
 --gradle takes a binary or a version, read in this order:
   1. A value with a "/" is a path to a binary. ./gradlew (or any ./path) is
-     relative to the project dir and must be in the project table, the
-     remote checkout, or the project dir in place. Anything else is a
-     filesystem path, such as <distribution>/bin/gradle, and must be an
-     executable file (a leading ~ is expanded).
+     relative to the project dir and must be in the remote checkout, the
+     project dir in place, or, for stop-daemons, the set-up project; one in
+     the project table alone is refused, as it is probed before anything is
+     laid out. Anything else is a filesystem path, such as
+     <distribution>/bin/gradle, and must be an executable file (a leading ~
+     is expanded).
   2. A value without a "/" that names an executable on PATH or in the working
      directory (gradle, grl) is a binary.
   3. Anything else must be a Gradle version (9.7.1, 9.8.0-rc-2). Its wrapper
@@ -471,11 +481,25 @@ With --json (run, check), the summary is printed as one JSON object on
 the last line of stdout; for run it is also in <out>/summary.json. Its keys
 follow the TOML's: `name` per step, `description` at the top, and
 `gradle_args` for the arguments after --. The words are those of the console,
-in lower case, all under the key `result`:
+in lower case, all under the key `result`. The keys of run's summary, in order:
 
+  scenario               the scenario's name
+  description            the scenario's description, when it has one
+  out                    the out dir, as on the out: line
+  project                the project dir: <out>/project, or the project dir in place
+  gradle                 the Gradle binary, as on the gradle: line
+  gradle_version         its version, as on the gradle: line, when that line has one
+  gradle_args            the arguments after --, as a list, when there are any
+  gradle_user_home       the Gradle user home, as on the home: line
+  remote                 with setup.layout.remote: {link, checkout, fetched}, fetched false when cached
+  install                with a Gradle version in play: the wrapper install's {version, log, exit_code}
   result                 the run: "success", "failure", or "error"; with "error", `error`
                          holds the message: the step's, or `wrapper install failed: exit=N
                          -> install-wrapper.log`
+  steps[]                the steps that ran, in order; none after a failed wrapper install
+  steps[].index          the step's number, i in [i/N]
+  steps[].kind           "gradle", "shell", "write", "edit", "delete", or "clear"
+  steps[].name           the step's name, given or implied
   steps[].result         a run step: "expected", "unexpected", or "error"; any other step:
                          "done" or "error". Every step with "error" has the message as its
                          `error`, run steps included
@@ -484,9 +508,13 @@ in lower case, all under the key `result`:
                            {"check": "output", "text": "BUILD FAILED", "result": "unexpected"}
                            {"check": "no_output", "text": "deprecated", "result": "expected"}
                          with result "expected" or "unexpected"
+  steps[].files          a write or edit step's files, or the directory of a delete or clear; []
+                         for a delete of a directory that was not there
+  stop_daemons           the daemon stops, {before, after}; none with --keep-daemons or after a
+                         failed wrapper install
 
 A run step also has its exit_code, duration_s, log, and command; one that could
-not start (its project dir gone, say) has only its command and error: no
+not start (its project dir gone, say) has its command and error, but no
 exit_code, duration_s, log, or checks. The daemon stops have neither a result
 nor checks: each is {exit_code, duration_s, log}, or {error} for a stop that
 could not start, which never changes the result.
@@ -595,8 +623,9 @@ a `### N. <step name>` heading with its own sh block:
                   character, as dash before 0.5.13 drops a byte from such a
                   line in a heredoc
   edit            a unified diff in a `patch -p1` heredoc; for a file with a
-                  carriage return, whitespace in its path, or the name -, the
-                  whole file as for write, with its line ends kept
+                  carriage return or other control character, whitespace in its
+                  path, or the name -, the whole file as for write, with its line
+                  ends kept
   delete, clear   `rm -rf <dir>`, and for clear `mkdir <dir>` after it
 
 In the block of a write, edit, delete, or clear, the commands are joined with
