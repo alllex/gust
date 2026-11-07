@@ -361,7 +361,8 @@ Commands
                                   The --json summary is {scenario, description, gradle,
                                   gradle_version, steps (a count), step_counts, remote {link,
                                   cached} when there is one, project when in place, result}, with
-                                  result always "success", as in run's summary.
+                                  result always "success", as in run's summary. As there, a key
+                                  with no value (no description, no version) is left out.
   setup SCENARIO [--out DIR | --tmp] [--gradle BIN|VERSION] [--gradle-user-home DIR] [--show-output]
                                   lay the project out and, with a version in play, install its
                                   wrapper; no step runs. Ends in `result: set up` (or
@@ -2645,7 +2646,7 @@ def _cli_check(scenario: Scenario, gradle: str | None, user_home: Path, as_json:
         if scenario.project is not None:
             summary["project"] = str(scenario.project)
         summary["result"] = "success"
-        print(json.dumps(summary))
+        print(json.dumps({k: v for k, v in summary.items() if v}))      # no empty keys, as in run's summary
     return EXIT_OK
 
 

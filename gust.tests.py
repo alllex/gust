@@ -970,6 +970,15 @@ class LayoutRemoteTest(GustCase):
         self.assertEqual(code, gs.EXIT_OK, out)
         self.assertIn("gradle:   gradle (default; not checked, remote not cached)\n", out)
 
+    def test_check_json_has_no_null_keys(self):
+        s = self.scenario_file('[[steps]]\nrun.shell = "true"\n', "plain.toml")        # no description, nothing to probe
+        code, out, _ = self.cli("check", str(s), "--json")
+        self.assertEqual(code, gs.EXIT_OK)
+        self.assertEqual(json.loads(out.rstrip("\n").splitlines()[-1]),               # empty keys left out, as in run's summary
+                         {"scenario": "plain", "gradle": "gradle", "steps": 1,
+                          "step_counts": {"gradle": 0, "shell": 1, "write": 0, "edit": 0, "delete": 0, "clear": 0},
+                          "result": "success"})
+
     def test_check_command(self):
         self.fake_gradle_on_path()
         s = self.write(f'description = "Checks the remote."\nsetup.gradle = "wrapper"\nsetup.layout.remote = "{self.url}#{self.sha}"',
