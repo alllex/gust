@@ -95,7 +95,7 @@ LAYOUT_KEYS = {"base", "remote", "project"}
 STEP_KEYS = {"name", "run", "write", "edit", "delete", "clear"}
 RUN_KINDS = ("gradle", "shell")
 RUN_KEYS = {"gradle": {"args", "expect"}, "shell": {"command", "expect"}}
-EDIT_KEYS = {"file", "replace", "with"}
+EDIT_KEYS = {"file", "replace", "with", "append"}
 EXPECT_KEYS = {"exit", "output", "no_output"}
 EXPECT_VALUES = ("pass", "fail")
 
@@ -219,7 +219,8 @@ steps[]                             each step has exactly one kind: run, write, 
   run           table    kind       run.gradle or run.shell; see below
   write         table    kind       <path> = <content>, as in the project table; creates or
                                     replaces files
-  edit          array    kind       edits applied in order; see steps[].edit[]
+  edit          array    kind       edits, each a replace or an append, applied in order; see
+                                    steps[].edit[]
   delete        string   kind       a directory, removed with everything in it; when it is not
                                     there, nothing is done
   clear         string   kind       a directory, emptied and kept; when it is not there, it is
@@ -256,15 +257,22 @@ steps[].run.*.expect                what must hold after the step; every listed 
                                     where a CRLF or CR line end is read as LF
   no_output     array    optional   strings that must not appear in it
 
-steps[].edit[]
+steps[].edit[]                      a replace edit (replace and with) or an append edit (append alone)
   file          string   required   a file from the project table, the remote checkout, the
                                     project dir in place, or an earlier write step
-  replace       string   required   non-empty; must occur exactly once in the file when the step runs,
+  replace       string   kind       non-empty; must occur exactly once in the file when the step runs,
                                     overlapping occurrences counted, where a line end matches CRLF,
                                     LF and CR alike
-  with          string   required   the replacement text, written as it is, except that in a file
-                                    with only CRLF, only LF or only CR line ends, each \\n not after a \\r
-                                    is written as the file's line end
+  with          string   kind       required with replace: the replacement text, written as it is,
+                                    except that in a file with only CRLF, only LF or only CR line
+                                    ends, each \\n not after a \\r is written as the file's line end
+  append        string   kind       non-empty; the text added at the end of the file, on lines of
+                                    its own: a line end is added before it when the file is not
+                                    empty and does not end with one, and after it when the text
+                                    does not end with one. In a file with only CRLF, only LF or
+                                    only CR line ends, the added line ends, and each \\n not after a
+                                    \\r in the text, are the file's line end; in any other file, the
+                                    added line ends are \\n and the text is written as it is
 
 Each check of a run step comes out as expected or unexpected. The run stops at
 the first run step with an unexpected check (the scenario fails), or at a write, edit,
@@ -803,17 +811,20 @@ its own sh block:
   edit            a unified diff in a `patch -p1` heredoc; for a file with a
                   carriage return or other control character but tab, whitespace
                   in its path, or the name -, the whole file as for write, with
-                  its line ends kept
+                  its line ends kept. An append edit is the added text, line
+                  ends included, as for write, but with >> in place of >, as in
+                  `cat >> <file> <<'EOF'`
   delete, clear   `rm -rf <dir>`, and for clear `mkdir <dir>` after it
 
 In the block of a write, edit, delete, or clear, the commands are joined with
 &&, so the block stops at its first failure, such as a diff that does not
 apply. A block holds commands only: an interactive zsh runs a pasted comment
 line as a command. What to expect, and a note on an edit that is written as a
-whole file or changes nothing, are text above the block, with names and output
-texts as inline code; a forbidden output text is joined with "or", since any
-one of them fails the check. An edit step whose edits all change nothing has
-the note and no block. A run.shell command keeps its own # comments, with a
+whole file or changes nothing, or on an append to a file with no line end at
+its end, are text above the block, with names and output texts as inline code;
+a forbidden output text is joined with "or", since any one of them fails the
+check. An edit step whose edits all change nothing has the note and no block.
+A run.shell command keeps its own # comments, with a
 note above to run `setopt interactive_comments` first in zsh. The block of a
 run step is a plain command, since it may be expected to fail. A fence (``` or ~~~) or a < at the start of a
 line of the description, after any list or quote markers, is escaped, so the
@@ -988,8 +999,9 @@ class WriteStep:
 @dataclass(frozen=True)
 class Edit:
     file: str
-    replace: str
-    with_: str
+    replace: str = ""
+    with_: str = ""
+    append: str | None = None    # for an append edit, in place of replace and with: the text added at the end of the file
 
 
 @dataclass(frozen=True)
@@ -1351,6 +1363,17 @@ def _load_step(raw: object, index: int) -> Step:
             raise GustError(f"{ew}: must be a table")
         _expect_keys(e, ew, EDIT_KEYS)
         file = _file_path(_require(e, "file", str, ew), f"{ew}.file")
+        if "append" in e:
+            if mixed := [k for k in ("replace", "with") if k in e]:
+                raise GustError(f"{ew}: 'append' cannot be combined with {' or '.join(map(repr, mixed))}; an edit has "
+                                f"either 'replace' and 'with', or 'append'")
+            append = _require(e, "append", str, ew)
+            if not append:
+                raise GustError(f"{ew}.append: must not be empty")
+            edits.append(Edit(file=file, append=append))
+            continue
+        if "replace" not in e and "with" not in e:
+            raise GustError(f"{ew}: needs 'replace' and 'with', or 'append'")
         replace = _require(e, "replace", str, ew)
         if not replace:
             raise GustError(f"{ew}.replace: must not be empty")
@@ -1884,7 +1907,9 @@ def _apply_edit(project: Path, edit: Edit) -> None:
 def _edited_text(text: str, edit: Edit) -> str:
     """The text with the edit applied: a line end in the replaced text matches any kind, and in a file with one kind,
     a bare \n in the replacement is written as that kind. StepError unless the replaced text occurs exactly once,
-    overlapping occurrences counted."""
+    overlapping occurrences counted. An append edit is never an error."""
+    if edit.append is not None:
+        return _appended_text(text, edit.append)
     lines = re.split(r"\r\n|\r|\n", edit.replace)
     guard = "" if lines[0] else "(?!(?<=\r)\n)"                  # a match never starts inside a CRLF; only when needed, for speed
     pattern = re.compile(guard + "(?>\r\n|\r|\n)".join(map(re.escape, lines)))   # a line end matches any kind; CRLF is one
@@ -1897,6 +1922,19 @@ def _edited_text(text: str, edit: Edit) -> str:
     if eol := _line_end(text):                                   # a bare \n written as the file's own line end
         with_ = re.sub(r"(?<!\r)\n", lambda _: eol, with_)
     return pattern.sub(lambda _: with_, text)
+
+
+def _appended_text(text: str, append: str) -> str:
+    """The text with append added at its end, on lines of its own: a line end is added before it when the text is not
+    empty and does not end with one, and after it when it does not end with one itself. In a file with only one kind of
+    line end, the added line ends are of that kind, and so is each bare \\n in append, as for the replacement of an edit;
+    in any other file, they are \\n, and append is written as it is."""
+    eol = _line_end(text)
+    if eol:
+        append = re.sub(r"(?<!\r)\n", lambda _: eol, append)
+    eol = eol or "\n"
+    before = eol if text and not text.endswith(("\n", "\r")) else ""
+    return text + before + append + ("" if append.endswith(("\n", "\r")) else eol)
 
 
 def _line_end(text: str) -> str | None:
@@ -2720,7 +2758,8 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
                     raise GustError(f"{where}.file: {edit.file!r} is not UTF-8 text") from None
                 except StepError as e:
                     raise GustError(f"{where}.replace: {e}") from None
-                note, edit_commands = _sh_edit(rel, before, after)
+                sh = _sh_edit if edit.append is None else _sh_append
+                note, edit_commands = sh(rel, before, after)
                 notes += note
                 commands += edit_commands
                 files[rel] = after.encode("utf-8")
@@ -2810,24 +2849,25 @@ def _code(text: str) -> str:
     return f"{ticks}{pad}{text}{pad}{ticks}"
 
 
-def _sh_write(rel: str, content: str) -> Command:
+def _sh_write(rel: str, content: str, to: str = ">") -> Command:
     """A shell command for writing content to rel: a heredoc, with EOF2, EOF3, ... when a line of the content is EOF;
     printf for content a heredoc cannot hold as it is: without a final newline, or with a carriage return or other
-    control character, which is written as an escape, or when no delimiter is safe from the dash bug below."""
-    q = _sh_path(rel)
+    control character, which is written as an escape, or when no delimiter is safe from the dash bug below. With to
+    ">>", the content is added at the end of the file instead."""
+    q = to + " " + _sh_path(rel)
     if _CONTROL_RE.search(content):
         fmt = _CONTROL_RE.sub(lambda m: "\\r" if m[0] == "\r" else f"\\{ord(m[0]):03o}",
                               content.replace("\\", "\\\\").replace("%", "%%"))
         if fmt.startswith("-"):
             fmt = "\\055" + fmt[1:]                     # a leading - would be read as an option
-        lines = f"printf {shlex.quote(fmt)} > {q}".split("\n")
+        lines = f"printf {shlex.quote(fmt)} {q}".split("\n")
         return lines, len(lines) - 1
     lines = content[:-1].split("\n")
     delimiter = next((d for d in ["EOF"] + [f"EOF{n}" for n in range(2, len(lines) + 3)] if _safe_delimiter(d, lines)), None)
     if not content.endswith("\n") or delimiter is None:
-        lines = f"printf '%s' {shlex.quote(content)} > {q}".split("\n")
+        lines = f"printf '%s' {shlex.quote(content)} {q}".split("\n")
         return lines, len(lines) - 1
-    return [f"cat > {q} <<'{delimiter}'", *lines, delimiter], 0
+    return [f"cat {q} <<'{delimiter}'", *lines, delimiter], 0
 
 
 def _safe_delimiter(delimiter: str, lines: list[str]) -> bool:
@@ -2837,6 +2877,14 @@ def _safe_delimiter(delimiter: str, lines: list[str]) -> bool:
     return delimiter not in lines and not any(
         line.startswith(delimiter[:k]) and len(line) > k and not line[k].isascii()
         for line in lines for k in range(1, len(delimiter) + 1))
+
+
+def _sh_append(rel: str, before: str, after: str) -> tuple[list[str], list[Command]]:
+    """A note for the text above the block, if any, and the shell command for an append edit that turns before into
+    after at rel: the added text, as for a write, but added at the end of the file with >>."""
+    note = [f"The file {_code(rel)} does not end with a line end, so one is added before the text."] if (
+        before and not before.endswith(("\n", "\r"))) else []
+    return note, [_sh_write(rel, after[len(before):], ">>")]
 
 
 def _sh_edit(rel: str, before: str, after: str) -> tuple[list[str], list[Command]]:

@@ -484,6 +484,22 @@ run.shell = "true"
             self.assert_rejects(step, "a git repository's .git is never changed by a scenario, got ")
         gs.load_scenario('[[steps]]\nwrite.".github/x.git" = "x"')                         # only a name .git itself
 
+    def test_append_edits(self):
+        s = gs.load_scenario('[setup.layout.project]\n"a.txt" = "a"\n[[steps]]\nedit = [{ file = "a.txt", append = "b" }, { file = "a.txt", replace = "a", with = "c" }]')
+        self.assertEqual(s.steps[0].edits, [gs.Edit("a.txt", append="b"), gs.Edit("a.txt", "a", "c")])
+        S = '[setup.layout.project]\n"f" = "x"\n[[steps]]\n[[steps.edit]]\nfile = "f"\n'
+        for keys, error in [
+            ('append = "a"\nreplace = "x"', "steps[1].edit[1]: 'append' cannot be combined with 'replace'; an edit has either 'replace' and 'with', or 'append'"),
+            ('append = "a"\nwith = "y"', "steps[1].edit[1]: 'append' cannot be combined with 'with'; an edit has either"),
+            ('append = "a"\nreplace = "x"\nwith = "y"', "steps[1].edit[1]: 'append' cannot be combined with 'replace' or 'with'"),
+            ('append = ""', "steps[1].edit[1].append: must not be empty"),
+            ('append = 1', "steps[1].edit[1].append: must be str"),
+            ('', "steps[1].edit[1]: needs 'replace' and 'with', or 'append'"),
+            ('with = "y"', "steps[1].edit[1]: missing required key 'replace'"),
+        ]:
+            self.assert_rejects(S + keys, error)
+        self.assert_rejects('[[steps]]\nedit = [{ file = "f", append = "a" }]', "steps[1].edit[1].file: 'f' is not in the layout and no earlier step writes it")
+
 
 class LayoutBaseTest(GustCase):
     def setUp(self):
@@ -1257,6 +1273,36 @@ class SetupTest(GustCase):
             gs._apply_edit(self.tmp, gs.Edit(file="f.txt", replace="a", with_="x"))
         self.assertEqual(path.read_bytes(), b"a\xff\r\n")
 
+    def test_append_keeps_line_ends(self):
+        path = self.tmp / "f.txt"
+        for before, append, after in [
+            (b"a\n", "b", b"a\nb\n"),                                                  # a line end added after the text
+            (b"a\n", "b\nc\n", b"a\nb\nc\n"),                                          # and none when it has one
+            (b"a", "b", b"a\nb\n"),                                                    # no final line end: one added before the text
+            (b"a\n\n", "b", b"a\n\nb\n"),                                              # an empty last line is kept
+            (b"", "b", b"b\n"),                                                        # an empty file: nothing before the text
+            (b"", "\nb", b"\nb\n"),
+            (b"a\r\nb\r\n", "c\nd", b"a\r\nb\r\nc\r\nd\r\n"),                          # CRLF: a bare \n in the text, and the added one, as CRLF
+            (b"a\r\nb", "c", b"a\r\nb\r\nc\r\n"),                                      # CRLF without a final line end
+            (b"a\r\n", "c\r\nd\r\n", b"a\r\nc\r\nd\r\n"),                              # \r\n written out means the same
+            (b"a\rb", "c\nd", b"a\rb\rc\rd\r"),                                        # CR
+            (b"a\n", "c\r\nd", b"a\nc\r\nd\n"),                                        # LF: \r\n in the text is written as it is
+            (b"a\nb\r\n", "c\nd", b"a\nb\r\nc\nd\n"),                                  # both kinds: the text as written, \n added
+            (b"a\nb\r", "c", b"a\nb\rc\n"),                                            # a final lone \r is a line end
+            (b"abc", "d\ne", b"abc\nd\ne\n"),                                          # no line end at all: \n
+            ("\u00e9\r\n".encode(), "\u20ac", "\u00e9\r\n\u20ac\r\n".encode()),       # multi-byte UTF-8
+        ]:
+            path.write_bytes(before)
+            gs._apply_edit(self.tmp, gs.Edit(file="f.txt", append=append))
+            self.assertEqual(path.read_bytes(), after, (before, append))
+        with self.assertRaisesRegex(gs.StepError, r"^no such file g.txt; nothing to edit$"):
+            gs._apply_edit(self.tmp, gs.Edit(file="g.txt", append="x"))
+        self.assertFalse((self.tmp / "g.txt").exists())
+        path.write_bytes(b"a\xff\n")
+        with self.assertRaisesRegex(gs.StepError, r"^f.txt is not UTF-8 text; nothing to edit$"):
+            gs._apply_edit(self.tmp, gs.Edit(file="f.txt", append="x"))
+        self.assertEqual(path.read_bytes(), b"a\xff\n")
+
     def test_edit_counts_overlapping_occurrences(self):
         path = self.tmp / "f.txt"
         for before, replace, n in [
@@ -1543,6 +1589,36 @@ run.shell = "touch should-not-exist"
         self.assertEqual(on_disk["steps"], [{"index": 1, "kind": "edit", "name": "Edit: f.txt", "result": "error", "files": ["f.txt"],
                                              "error": "'a' occurs 2 times in f.txt; an edit needs exactly one"}])   # no checks
         self.assertEqual(list(on_disk)[-3:], ["result", "error", "steps"])
+
+    def test_append_edit(self):
+        summary = self.run_text("""
+name = "append"
+[setup.layout.project]
+"settings.gradle.kts" = 'include("sub")'
+[[steps]]
+[[steps.edit]]
+file = "settings.gradle.kts"
+append = 'enableFeaturePreview("STABLE_CONFIGURATION_CACHE")'
+[[steps]]
+run.shell = "mv settings.gradle.kts moved.kts"
+[[steps]]
+edit = [{ file = "settings.gradle.kts", append = "x" }]
+""")
+        self.assertEqual([s.result for s in summary.steps], ["done", "expected", "error"])
+        self.assertEqual((self.project / "moved.kts").read_bytes(), b'include("sub")\nenableFeaturePreview("STABLE_CONFIGURATION_CACHE")\n')
+        self.assertEqual(summary.steps[2].error, "no such file settings.gradle.kts; nothing to edit")
+        self.assertIn("[1/3] Edit: settings.gradle.kts\n", self.out.getvalue())
+        self.assertIn("[3/3] Edit: settings.gradle.kts\nERROR: no such file settings.gradle.kts; nothing to edit\n", self.out.getvalue())
+
+    def test_check_refuses_a_mixed_edit(self):
+        bad = self.scenario_file('[setup.layout.project]\n"a.txt" = "a"\n[[steps]]\nedit = [{ file = "a.txt", append = "b", with = "c" }]\n')
+        code, out, err = self.cli("check", str(bad), "--keep-daemons")
+        self.assertEqual((code, out, err.strip()), (gs.EXIT_ERROR, "", f"ERROR: {bad}: steps[1].edit[1]: 'append' cannot be combined "
+                                                                         f"with 'with'; an edit has either 'replace' and 'with', or 'append'"))
+        good = self.scenario_file('[setup.layout.project]\n"a.txt" = "a"\n[[steps]]\nedit = [{ file = "a.txt", append = "b" }]\n', "good.toml")
+        code, out, _ = self.cli("check", str(good), "--keep-daemons")
+        self.assertEqual(code, gs.EXIT_PASS, out)
+        self.assertIn("\nsteps: 1 (0 gradle, 0 shell, 0 write, 1 edit, 0 delete, 0 clear)", out)
 
     def test_run_step_that_cannot_start_is_an_error(self):
         if gs.WINDOWS:   # the dir a process runs in cannot be removed there, but a Gradle step runs without a shell, so a gone binary fails to start
@@ -2664,6 +2740,16 @@ run.shell = "true"
         self.assertIn('run.gradle.args = "assemble"\nrun.gradle.expect.output = ["', once)       # too long for one inline table
         self.assertEqual(gs.flatten(once, "t"), once)
 
+    def test_append_round_trip(self):
+        text = ('[setup.layout.project]\n"settings.gradle.kts" = \'include("sub")\'\n\n[[steps]]\n\n[[steps.edit]]\n'
+                'file = "settings.gradle.kts"\nappend = \'enableFeaturePreview("STABLE_CONFIGURATION_CACHE")\'\n\n'
+                '[[steps.edit]]\nfile = "settings.gradle.kts"\nappend = \'\'\'\nx\ny\n\'\'\'\n')
+        flat = gs.flatten(text, "t")
+        self.assertIn('[[steps.edit]]\nfile = "settings.gradle.kts"\nappend = \'enableFeaturePreview("STABLE_CONFIGURATION_CACHE")\'\n', flat)
+        self.assertIn("append = '''\nx\ny\n'''\n", flat)
+        self.assertEqual(gs.load_scenario(flat).steps, gs.load_scenario(text).steps)
+        self.assertEqual(gs.flatten(flat, "t"), flat)
+
 
 class ZipTest(GustCase):
     """gust zip: the project's starting state and a SCENARIO.md in a zip, with no Gradle run."""
@@ -2849,6 +2935,37 @@ rm -rf build
         self.assertEqual(str(cm.exception), "steps[1].edit[1].replace: 'a\\nb\\nc' occurs 0 times in c.txt; an edit needs exactly one")
         crlf = '[setup.layout.project]\n"c.txt" = "a\\r\\nb\\r\\n"\n[[steps]]\nedit = [{ file = "c.txt", replace = "a\\nb", with = "x\\ny" }]\n'
         self.assertIn("printf 'x\\r\ny\\r\n' > c.txt\n", self.readme(crlf))       # LF matches CRLF, and is written as CRLF there
+
+    def test_appends(self):
+        files = {"lf.txt": "a\n", "open.txt": "a", "crlf.txt": "one\r\ntwo", "cr.txt": "x\r", "empty.txt": "",
+                 "my file.txt": "x\n", "-": "x\n", "mixed.txt": "a\nb\r\n"}
+        edits = [("lf.txt", "b"), ("open.txt", "b\nc\n"), ("crlf.txt", "three\nfour"), ("cr.txt", "y\nz"), ("empty.txt", "e"),
+                 ("my file.txt", "y"), ("-", "d"), ("lf.txt", "EOF\n"), ("mixed.txt", "c\nd"), ("crlf.txt", "-x")]
+        text = ("[setup.layout.project]\n" + "".join(f"{json.dumps(k)} = {json.dumps(v)}\n" for k, v in files.items()) + "[[steps]]\nedit = ["
+                + ", ".join(f"{{ file = {json.dumps(f)}, append = {json.dumps(a)} }}" for f, a in edits) + "]\n")
+        readme = self.readme(text)
+        self.assertIn("```sh\ncat >> lf.txt <<'EOF' &&\nb\nEOF\n", readme)
+        self.assertIn("\nThe file `open.txt` does not end with a line end, so one is added before the text.\n", readme)
+        self.assertIn("\ncat >> open.txt <<'EOF' &&\n\nb\nc\nEOF\n", readme)
+        self.assertIn("\nprintf '\\r\\nthree\\r\\nfour\\r\\n' >> crlf.txt &&\n".replace("\\r\\n", "\\r\n"), readme)
+        self.assertIn("\nprintf 'y\\rz\\r' >> cr.txt &&\n", readme)
+        self.assertIn("\ncat >> 'my file.txt' <<'EOF' &&\ny\nEOF\n", readme)
+        self.assertIn("\ncat >> ./- <<'EOF' &&\nd\nEOF\n", readme)
+        self.assertIn("\ncat >> lf.txt <<'EOF2' &&\nEOF\nEOF2\n", readme)
+        self.assertIn("\nprintf '\\055x\\r\n' >> crlf.txt\n```\n", readme)      # a leading - would be read as an option
+        self.assertNotIn("patch", readme)
+        project = self.layout_project(text)
+        self.run_snippets(readme, project)
+        run = self.tmp / "run"                                       # as a run makes them
+        run.mkdir()
+        for rel, content in files.items():
+            (run / rel).write_bytes(content.encode())
+        for rel, append in edits:
+            gs._apply_edit(run, gs.Edit(file=rel, append=append))
+        for rel in files:
+            self.assertEqual((project / rel).read_bytes(), (run / rel).read_bytes(), rel)
+        self.assertEqual([(run / f).read_bytes() for f in ("lf.txt", "open.txt", "crlf.txt", "cr.txt", "empty.txt", "mixed.txt")],
+                         [b"a\nb\nEOF\n", b"a\nb\nc\n", b"one\r\ntwo\r\nthree\r\nfour\r\n-x\r\n", b"x\ry\rz\r", b"e\n", b"a\nb\r\nc\nd\n"])
 
     def test_edits_split_lines_at_lf_only(self):
         text = '[setup.layout.project]\n"u.txt" = "one\u2028two\\u0085\\ntwo\\nthree\\n"\n[[steps]]\nedit = [{ file = "u.txt", replace = "three", with = "3" }]\n'
