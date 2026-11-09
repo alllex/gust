@@ -1,8 +1,14 @@
-description = "Gradle from PATH, run from bash as $GRADLE."
+description = "Gradle from PATH, run from bash as $GRADLE, with a line appended to the settings file."
+
+[[steps]]
+name = "a line appended to a settings file without a final line end"
+[[steps.edit]]
+file = "settings.gradle.kts"
+append_line = 'println("appended line ran")'
 
 [[steps]]
 name = "gradle from PATH runs from bash"
-run.shell = { command = '"$GRADLE" help', expect = { output = ["Welcome to Gradle"] } }
+run.shell = { command = '"$GRADLE" help', expect = { output = ["Welcome to Gradle", "appended line ran"] } }
 
 [setup.layout.project]
 "settings.gradle.kts" = 'rootProject.name = "shell"'

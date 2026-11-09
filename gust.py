@@ -95,7 +95,8 @@ LAYOUT_KEYS = {"base", "remote", "project"}
 STEP_KEYS = {"name", "run", "write", "edit", "delete", "clear"}
 RUN_KINDS = ("gradle", "shell")
 RUN_KEYS = {"gradle": {"args", "expect"}, "shell": {"command", "expect"}}
-EDIT_KEYS = {"file", "replace", "with", "append"}
+EDIT_KEYS = {"file", "replace", "with", "append_line"}
+EDIT_FORMS = "an edit has either 'replace' and 'with', or 'append_line'"
 EXPECT_KEYS = {"exit", "output", "no_output"}
 EXPECT_VALUES = ("pass", "fail")
 
@@ -219,7 +220,7 @@ steps[]                             each step has exactly one kind: run, write, 
   run           table    kind       run.gradle or run.shell; see below
   write         table    kind       <path> = <content>, as in the project table; creates or
                                     replaces files
-  edit          array    kind       edits, each a replace or an append, applied in order; see
+  edit          array    kind       edits, each a replace or an append_line, applied in order; see
                                     steps[].edit[]
   delete        string   kind       a directory, removed with everything in it; when it is not
                                     there, nothing is done
@@ -257,22 +258,25 @@ steps[].run.*.expect                what must hold after the step; every listed 
                                     where a CRLF or CR line end is read as LF
   no_output     array    optional   strings that must not appear in it
 
-steps[].edit[]                      a replace edit (replace and with) or an append edit (append alone)
+steps[].edit[]                      two kinds: replace, which needs with, or append_line, alone
   file          string   required   a file from the project table, the remote checkout, the
                                     project dir in place, or an earlier write step
   replace       string   kind       non-empty; must occur exactly once in the file when the step runs,
                                     overlapping occurrences counted, where a line end matches CRLF,
                                     LF and CR alike
-  with          string   kind       required with replace: the replacement text, written as it is,
-                                    except that in a file with only CRLF, only LF or only CR line
-                                    ends, each \\n not after a \\r is written as the file's line end
-  append        string   kind       non-empty; the text added at the end of the file, on lines of
-                                    its own: a line end is added before it when the file is not
-                                    empty and does not end with one, and after it when the text
-                                    does not end with one. In a file with only CRLF, only LF or
-                                    only CR line ends, the added line ends, and each \\n not after a
-                                    \\r in the text, are the file's line end; in any other file, the
-                                    added line ends are \\n and the text is written as it is
+  with          string   required   with replace: the replacement text, written as it is, except
+                                    that in a file with only CRLF, only LF or only CR line ends,
+                                    each \\n not after a \\r is written as the file's line end
+  append_line   string   kind       non-empty; text added at the end of the file, on a new line: a
+                                    line end is added before it when the file is not empty and does
+                                    not end with one, and after it when the text does not end with
+                                    one. The text may hold more lines. In a file with only CRLF,
+                                    only LF or only CR line ends, the added line ends, and each \\n
+                                    not after a \\r in the text, are the file's line end. In a file
+                                    with no line end, the added ones are the text's kind when it has
+                                    only one. In any other case they are \\n and the text is written
+                                    as it is, but for a \\n at its start after a lone \\r at the end
+                                    of the file, which is written as \\r, so the two stay two line ends
 
 Each check of a run step comes out as expected or unexpected. The run stops at
 the first run step with an unexpected check (the scenario fails), or at a write, edit,
@@ -811,24 +815,25 @@ its own sh block:
   edit            a unified diff in a `patch -p1` heredoc; for a file with a
                   carriage return or other control character but tab, whitespace
                   in its path, or the name -, the whole file as for write, with
-                  its line ends kept. An append edit is the added text, line
-                  ends included, as for write, but with >> in place of >, as in
+                  its line ends kept. For append_line, the added text, line ends
+                  included, as for write but with >> in place of >, as in
                   `cat >> <file> <<'EOF'`
   delete, clear   `rm -rf <dir>`, and for clear `mkdir <dir>` after it
 
 In the block of a write, edit, delete, or clear, the commands are joined with
 &&, so the block stops at its first failure, such as a diff that does not
 apply. A block holds commands only: an interactive zsh runs a pasted comment
-line as a command. What to expect, and a note on an edit that is written as a
-whole file or changes nothing, or on an append to a file with no line end at
-its end, are text above the block, with names and output texts as inline code;
-a forbidden output text is joined with "or", since any one of them fails the
-check. An edit step whose edits all change nothing has the note and no block.
-A run.shell command keeps its own # comments, with a
-note above to run `setopt interactive_comments` first in zsh. The block of a
-run step is a plain command, since it may be expected to fail. A fence (``` or ~~~) or a < at the start of a
-line of the description, after any list or quote markers, is escaped, so the
-rest of SCENARIO.md stays as it is; a < that starts an autolink, such as
+line as a command. What to expect is text above the block, and so is a note on
+an edit that is written as a whole file or changes nothing, or on an
+append_line to a file with no final line end, where one is added before the
+text. Names and output texts there are inline code; a forbidden output text is
+joined with "or", since any one of them fails the check. An edit step whose
+edits all change nothing has the note and no block. A run.shell command keeps
+its own # comments, with a note above to run `setopt interactive_comments`
+first in zsh. The block of a run step is a plain command, since it may be
+expected to fail. A fence (``` or ~~~) or a < at the start of a line of the
+description, after any list or quote markers, is escaped, so the rest of
+SCENARIO.md stays as it is; a < that starts an autolink, such as
 <https://...>, is left as it is.
 
 For the same scenario, SCENARIO.md is the same, byte for byte, on every
@@ -843,7 +848,9 @@ are refused:
   - a zip that exists already (it is never replaced), or whose name minus .zip
     is no name of the form [A-Za-z0-9][A-Za-z0-9._-]*, as the top folder
   - setup.project, with nothing to lay out, and a binary for --gradle
-  - an edit that cannot be applied, and an edit of a wrapper file
+  - an edit that cannot be applied, and an edit of a wrapper file, or of a
+    symbolic link of the remote commit or a file under one, since the zip
+    holds the link, not the file it points to
   - a SCENARIO.md in the project, or a write, edit, delete, or clear of it, in
     any case (scenario.md too, as on macOS and Windows)
   - a name in the remote commit that a layout could not have, such as one
@@ -1001,7 +1008,11 @@ class Edit:
     file: str
     replace: str = ""
     with_: str = ""
-    append: str | None = None    # for an append edit, in place of replace and with: the text added at the end of the file
+    append_line: str | None = None   # in place of replace and with: the text added at the end of the file, on a new line
+
+    def __post_init__(self):
+        if not (self.replace and self.append_line is None or self.append_line and not self.replace and not self.with_):
+            raise ValueError(f"an edit of {self.file} needs a non-empty replace, or a non-empty append_line alone")
 
 
 @dataclass(frozen=True)
@@ -1363,17 +1374,19 @@ def _load_step(raw: object, index: int) -> Step:
             raise GustError(f"{ew}: must be a table")
         _expect_keys(e, ew, EDIT_KEYS)
         file = _file_path(_require(e, "file", str, ew), f"{ew}.file")
-        if "append" in e:
-            if mixed := [k for k in ("replace", "with") if k in e]:
-                raise GustError(f"{ew}: 'append' cannot be combined with {' or '.join(map(repr, mixed))}; an edit has "
-                                f"either 'replace' and 'with', or 'append'")
-            append = _require(e, "append", str, ew)
-            if not append:
-                raise GustError(f"{ew}.append: must not be empty")
-            edits.append(Edit(file=file, append=append))
+        given = [k for k in ("replace", "with") if k in e]
+        if "append_line" in e:
+            if given:
+                raise GustError(f"{ew}: 'append_line' cannot be combined with {' and '.join(map(repr, given))}; {EDIT_FORMS}")
+            append_line = _require(e, "append_line", str, ew)
+            if not append_line:
+                raise GustError(f"{ew}.append_line: must not be empty")
+            edits.append(Edit(file=file, append_line=append_line))
             continue
-        if "replace" not in e and "with" not in e:
-            raise GustError(f"{ew}: needs 'replace' and 'with', or 'append'")
+        if not given:
+            raise GustError(f"{ew}: needs 'replace' and 'with', or 'append_line'")
+        if missing := next((k for k in ("replace", "with") if k not in e), None):
+            raise GustError(f"{ew}: missing required key {missing!r}; {EDIT_FORMS}")
         replace = _require(e, "replace", str, ew)
         if not replace:
             raise GustError(f"{ew}.replace: must not be empty")
@@ -1907,9 +1920,9 @@ def _apply_edit(project: Path, edit: Edit) -> None:
 def _edited_text(text: str, edit: Edit) -> str:
     """The text with the edit applied: a line end in the replaced text matches any kind, and in a file with one kind,
     a bare \n in the replacement is written as that kind. StepError unless the replaced text occurs exactly once,
-    overlapping occurrences counted. An append edit is never an error."""
-    if edit.append is not None:
-        return _appended_text(text, edit.append)
+    overlapping occurrences counted. An append_line edit is never an error."""
+    if edit.append_line is not None:
+        return _appended_text(text, edit.append_line)
     lines = re.split(r"\r\n|\r|\n", edit.replace)
     guard = "" if lines[0] else "(?!(?<=\r)\n)"                  # a match never starts inside a CRLF; only when needed, for speed
     pattern = re.compile(guard + "(?>\r\n|\r|\n)".join(map(re.escape, lines)))   # a line end matches any kind; CRLF is one
@@ -1924,17 +1937,26 @@ def _edited_text(text: str, edit: Edit) -> str:
     return pattern.sub(lambda _: with_, text)
 
 
-def _appended_text(text: str, append: str) -> str:
-    """The text with append added at its end, on lines of its own: a line end is added before it when the text is not
-    empty and does not end with one, and after it when it does not end with one itself. In a file with only one kind of
-    line end, the added line ends are of that kind, and so is each bare \\n in append, as for the replacement of an edit;
-    in any other file, they are \\n, and append is written as it is."""
+def _appended_text(text: str, append_line: str) -> str:
+    """The text with append_line added at its end, on lines of its own: a line end is added before it when the text is
+    not empty and does not end with one, and after it when it does not end with one itself. The added line ends are of
+    the file's kind in a file with only one kind of line end, and so is each bare \\n in append_line, as for the
+    replacement of an edit. In a file with no line end, they are of append_line's kind when it has only one, and in any
+    other case they are \\n, with append_line written as it is. A bare \\n that starts append_line right after a lone \\r
+    at the end of the file is written as \\r, so that the two do not become one CRLF."""
     eol = _line_end(text)
     if eol:
-        append = re.sub(r"(?<!\r)\n", lambda _: eol, append)
-    eol = eol or "\n"
-    before = eol if text and not text.endswith(("\n", "\r")) else ""
-    return text + before + append + ("" if append.endswith(("\n", "\r")) else eol)
+        append_line = re.sub(r"(?<!\r)\n", lambda _: eol, append_line)
+    elif text.endswith("\r") and append_line.startswith("\n"):   # a mixed file: \r then \n would be one line end
+        append_line = "\r" + append_line[1:]
+    eol = eol or (None if re.search(r"[\r\n]", text) else _line_end(append_line)) or "\n"
+    before = eol if text and not _ends_line(text) else ""
+    return text + before + append_line + ("" if _ends_line(append_line) else eol)
+
+
+def _ends_line(text: str) -> bool:
+    """Whether the text ends with a line end of any kind."""
+    return text.endswith(("\n", "\r"))
 
 
 def _line_end(text: str) -> str | None:
@@ -2581,7 +2603,8 @@ def zip_files(scenario: Scenario, gradle_version: str | None = None) -> dict[str
     files = {rel: f for rel, f in files.items() if not _is_wrapper(rel)}
     if own := next((rel for rel in files if _is_scenario_md(rel)), None):
         raise GustError(f"the project has {own!r}, where the zip's {SCENARIO_MD} goes")
-    readme = render_scenario_md(scenario, {rel: data for rel, (_, data) in files.items()}, version)
+    links = {rel: _link_target(rel, data) for rel, (mode, data) in files.items() if mode == LINK_MODE}
+    readme = render_scenario_md(scenario, {rel: data for rel, (_, data) in files.items()}, links, version)
     files[SCENARIO_MD] = (FILE_MODE, readme.encode("utf-8"))
     return files
 
@@ -2637,11 +2660,17 @@ def _check_link(rel: str, target: bytes) -> None:
     """Refuse a symbolic link that is absolute or leads out of the project, which would be one in the zip too, or one
     to the project dir or SCENARIO.md, through which a step would change SCENARIO.md on replay."""
     to = target.decode("utf-8", errors="replace")
-    inside = posixpath.normpath(posixpath.join(posixpath.dirname(rel), to.replace("\\", "/")))
+    inside = _link_target(rel, target)
     if posixpath.isabs(to) or PureWindowsPath(to).anchor or inside == ".." or inside.startswith("../"):
         raise GustError(f"setup.layout.remote: the link {rel!r} points to {to!r}, outside the project")
     if inside == "." or _is_scenario_md(inside):             # a step through the link would change the zip's SCENARIO.md
         raise GustError(f"setup.layout.remote: the link {rel!r} points to {to!r}, the project dir or its {SCENARIO_MD}")
+
+
+def _link_target(rel: str, target: bytes) -> str:
+    """The path in the project that the symbolic link rel points to, with forward slashes."""
+    to = target.decode("utf-8", errors="replace")
+    return posixpath.normpath(posixpath.join(posixpath.dirname(rel), to.replace("\\", "/")))
 
 
 def _is_scenario_md(rel: str) -> bool:
@@ -2692,16 +2721,17 @@ def _write_zip(target: Path, top: str, files: dict[str, tuple[int, bytes]]) -> N
         raise
 
 
-def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_version: str | None) -> str:
+def render_scenario_md(scenario: Scenario, files: dict[str, bytes], links: dict[str, str], gradle_version: str | None) -> str:
     """SCENARIO.md, the scenario written out as steps to run by hand: its name, description, and Gradle version, then
     each step as a shell snippet under a `### N. <name>` heading. A block holds commands only: what to expect, and a
     note on how a file is written, is text above it, since an interactive zsh runs a pasted comment. ./gradlew is gradle,
-    writes are heredocs (printf where a heredoc cannot hold the content), edits are diffs for patch -p1, and deletes
-    and clears are rm -rf.
+    writes are heredocs (printf where a heredoc cannot hold the content), edits are diffs for patch -p1, append_line
+    edits are heredocs or printf with >>, and deletes and clears are rm -rf.
 
-    files is the project's starting state as zipped, path -> bytes. The text depends on nothing else, so the same
-    scenario gives the same bytes on every machine. A shell step that uses the wrapper, which is not in the zip, is
-    refused.
+    files is the project's starting state as zipped, path -> bytes; links holds the symbolic links among them, path ->
+    the path they point to. The text depends on nothing else, so the same scenario gives the same bytes on every
+    machine. A shell step that uses the wrapper, which is not in the zip, is refused, and so is an edit of a symbolic
+    link, as files holds the link's target path, not the text of the file it points to.
     """
     out = [f"# {_visible(scenario.name)}", ""]
     if scenario.description:                                 # a fence in it would swallow the rest: escaped
@@ -2749,6 +2779,9 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
                 rel, where = edit.file, f"steps[{i}].edit[{j}]"
                 if _is_scenario_md(rel):
                     raise GustError(f"{where}.file: {rel!r} is where the zip's {SCENARIO_MD} goes")
+                if link := next((p for p in (*_parents(rel), rel) if p in links), None):   # the file, or a dir above it
+                    raise GustError(f"{where}.file: {link!r} is a symbolic link to {links[link]!r}; edit "
+                                    f"{links[link] + rel[len(link):]!r} instead")
                 if rel not in files:
                     raise GustError(f"{where}.file: {edit.file!r} is left out of the zip with the wrapper, so it cannot be edited there")
                 try:
@@ -2758,7 +2791,7 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
                     raise GustError(f"{where}.file: {edit.file!r} is not UTF-8 text") from None
                 except StepError as e:
                     raise GustError(f"{where}.replace: {e}") from None
-                sh = _sh_edit if edit.append is None else _sh_append
+                sh = _sh_edit if edit.append_line is None else _sh_append
                 note, edit_commands = sh(rel, before, after)
                 notes += note
                 commands += edit_commands
@@ -2769,6 +2802,7 @@ def render_scenario_md(scenario: Scenario, files: dict[str, bytes], gradle_versi
             q = _sh_path(step.dir)
             commands.append(([f"rm -rf {q}" if step.kind == "delete" else f"rm -rf {q} && mkdir {q}"], 0))
             files = {rel: data for rel, data in files.items() if not _under(rel, step.dir)}
+            links = {rel: to for rel, to in links.items() if not _under(rel, step.dir)}
             dirs = {d for d in dirs if not _under(d, step.dir)} | ({step.dir} if step.kind == "clear" else set())
         body += _chained(commands)
         heading = _visible(label or step.label()).strip()
@@ -2849,12 +2883,12 @@ def _code(text: str) -> str:
     return f"{ticks}{pad}{text}{pad}{ticks}"
 
 
-def _sh_write(rel: str, content: str, to: str = ">") -> Command:
+def _sh_write(rel: str, content: str, append: bool = False) -> Command:
     """A shell command for writing content to rel: a heredoc, with EOF2, EOF3, ... when a line of the content is EOF;
     printf for content a heredoc cannot hold as it is: without a final newline, or with a carriage return or other
-    control character, which is written as an escape, or when no delimiter is safe from the dash bug below. With to
-    ">>", the content is added at the end of the file instead."""
-    q = to + " " + _sh_path(rel)
+    control character, which is written as an escape, or when no delimiter is safe from the dash bug below. With append,
+    the content is added at the end of the file, with >> in place of >."""
+    q = (">> " if append else "> ") + _sh_path(rel)
     if _CONTROL_RE.search(content):
         fmt = _CONTROL_RE.sub(lambda m: "\\r" if m[0] == "\r" else f"\\{ord(m[0]):03o}",
                               content.replace("\\", "\\\\").replace("%", "%%"))
@@ -2880,11 +2914,11 @@ def _safe_delimiter(delimiter: str, lines: list[str]) -> bool:
 
 
 def _sh_append(rel: str, before: str, after: str) -> tuple[list[str], list[Command]]:
-    """A note for the text above the block, if any, and the shell command for an append edit that turns before into
-    after at rel: the added text, as for a write, but added at the end of the file with >>."""
+    """A note for the text above the block, if any, and the shell command for an append_line edit that turns before
+    into after at rel: the added text, as for a write, but added at the end of the file with >>."""
     note = [f"The file {_code(rel)} does not end with a line end, so one is added before the text."] if (
-        before and not before.endswith(("\n", "\r"))) else []
-    return note, [_sh_write(rel, after[len(before):], ">>")]
+        before and not _ends_line(before)) else []
+    return note, [_sh_write(rel, after[len(before):], append=True)]
 
 
 def _sh_edit(rel: str, before: str, after: str) -> tuple[list[str], list[Command]]:
