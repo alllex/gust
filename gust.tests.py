@@ -2095,6 +2095,58 @@ class CliTest(GustCase):
         self.assertEqual((code, err), (gs.EXIT_PASS, ""))
         self.assertIn("usage: gust.py", out)                                          # the general help, not a "None runs no Gradle step" error
 
+    def test_s_is_short_for_show_output(self):
+        s = self.scenario_file('name = "a"\n[[steps]]\nrun.gradle = "help"')
+        for flag in ("-s", "--show-output"):
+            code, out, _ = self.cli("run", str(s), "--gradle", "gecho", "--keep-daemons", flag)
+            self.assertEqual(code, gs.EXIT_PASS, flag)
+            self.assertIn(f"{rule('step-01.log')}\n{home_arg()} help\n{CLOSING}\n", out, flag)
+            self.assertIn("exit: pass, as expected\n", out, flag)                     # every check, as with --show-output
+            self.assertTrue(gs.build_parser().parse_args(["setup", str(s), flag]).show_output, flag)
+        for command in ("run", "setup"):
+            _, out, _ = self.cli("help", command)
+            self.assertIn("-s, --show-output", out, command)
+        # after --, -s is Gradle's (its --stacktrace), not gust's: onto the command, and no output shown
+        code, out, _ = self.cli("run", str(s), "--gradle", "gecho", "--keep-daemons", "--json", "--", "-s")
+        self.assertEqual(code, gs.EXIT_PASS)
+        self.assertIn("$ gecho help -s\nEXPECTED: PASS (exit=0) in ", out)
+        self.assertNotIn("-----", out)
+        last = json.loads(out.rstrip("\n").splitlines()[-1])
+        self.assertEqual((last["gradle_args"], last["steps"][0]["command"]), (["-s"], "gecho help -s"))
+
+    def test_abbreviated_long_options_are_refused(self):
+        s = self.scenario_file('[[steps]]\nrun.shell = "true"')
+        explicit = "argument -s/--show-output: ignored explicit argument '1'"
+        for argv, message in (
+                (["run", str(s), "--s"], None), (["run", str(s), "--show"], None), (["run", str(s), "--keep"], None),
+                (["setup", str(s), "--show"], None), (["check", str(s), "--js"], None),
+                # one dash: not -s -h (help, exit 0 on Python 3.14 and newer), and short options one to a token
+                (["run", str(s), "-show-output"], None), (["run", str(s), "-show"], None), (["run", str(s), "-sh"], None),
+                (["setup", str(s), "-sh"], None), (["run", str(s), "-ss"], None),
+                (["run", str(s), "-show", "--", "-sh"], "unrecognized arguments: -show"),      # only gust's own are checked
+                (["run", str(s), "--show-output=1"], explicit)):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+                gs.main(argv)
+            self.assertEqual(cm.exception.code, gs.EXIT_ERROR, argv)
+            self.assertIn(f"ERROR: {message or f'unrecognized arguments: {argv[-1]}'}\n", err.getvalue(), argv)
+            self.assertEqual(out.getvalue(), "", argv)                                # no help printed
+        # what stays: - for stdin, zip's -oPATH, and a negative number to its option's own check
+        code, out, _ = self.cli("run", "-", "-s", "--keep-daemons", stdin='[[steps]]\nrun.shell = "echo body"\n')
+        self.assertEqual(code, gs.EXIT_PASS)
+        self.assertIn("body\n", out)
+        code, out, _ = self.cli("zip", str(s), f"-o{self.tmp / 'o.zip'}")
+        self.assertEqual((code, out), (gs.EXIT_PASS, f"{self.tmp / 'o.zip'}\n"))
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            gs.main(["run", str(s), "--tail", "-10"])
+        self.assertIn("--tail must be 0 or more", err.getvalue())
+        self.assertFalse((self.tmp / "s.out").exists())                              # nothing ran
+        parser = gs.build_parser()
+        self.assertFalse(parser.allow_abbrev)
+        for name, sub in parser.parse_args([])._subparsers.items():
+            self.assertFalse(sub.allow_abbrev, name)                                  # each command's own options too
+
     def test_a_scenario_that_is_not_utf8_is_refused(self):
         text = '[[steps]]\nwrite."a.txt" = "caf\u00e9"\n'
         for encoding in ("latin-1", "utf-16"):                                          # utf-16: PowerShell 5's >

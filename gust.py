@@ -414,13 +414,13 @@ Commands
                                   With --json, the summary of the scenario is printed as one JSON
                                   object on the last line; see JSON for its schema. It has no
                                   result: check exits 0 or reports the error.
-  setup SCENARIO [--out DIR | --tmp] [--gradle BIN|VERSION] [--gradle-user-home DIR] [--show-output]
+  setup SCENARIO [--out DIR | --tmp] [--gradle BIN|VERSION] [--gradle-user-home DIR] [-s, --show-output]
                                   lay the project out and, with a version in play, install its
                                   wrapper; no step runs. Ends in the footer (see Console): the out:
                                   line, and after a failed install `scenario: ERROR at [WRP]`.
                                   Refused in place.
   run SCENARIO [--out DIR | --tmp] [--gradle BIN|VERSION] [--gradle-user-home DIR] [--project DIR]
-               [--json] [--tail N] [--show-output] [--keep-daemons] [--trace] [-- GRADLE_ARGS ...]
+               [--json] [--tail N] [-s, --show-output] [--keep-daemons] [--trace] [-- GRADLE_ARGS ...]
                                   setup, then stop daemons, run the steps, stop daemons
   stop-daemons SCENARIO [--out DIR] [--gradle BIN] [--gradle-user-home DIR] [--project DIR]
                                   run '<gradle> --stop' in <out>/project, or in the project dir
@@ -436,6 +436,9 @@ Commands
 
 With --out DIR, the out dir is DIR; with --tmp it is under /tmp (see Out dir).
 With --project DIR, an existing project dir is used in place (see In place).
+-s is short for --show-output; Gradle's own -s (--stacktrace) goes after --:
+`gust run x.toml -- -s`. A long option is accepted only in full, and a short
+one only on its own: --show and -sh are usage errors.
 
 --gradle takes a binary or a version, read in this order:
   1. A value with a "/" is a path to a binary. ./gradlew (or any ./path) is
@@ -2971,7 +2974,13 @@ def _print_error(message: str) -> None:
 
 
 class Parser(argparse.ArgumentParser):
-    """argparse, with a usage error ending in an ERROR: line, as every other error gust prints does."""
+    """argparse, with a usage error ending in an ERROR: line, as every other error gust prints does, and with no
+    abbreviated long options: only a full name or a documented short form is accepted. The subparsers are made with
+    this class too, so the same holds for every command's options."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
 
     def error(self, message: str):
         self.print_usage(sys.stderr)
@@ -3010,7 +3019,7 @@ def build_parser() -> argparse.ArgumentParser:
                                          "No step runs. Ends in the out: line, or after a failed install in "
                                          "'scenario: ERROR at [WRP]'.")
     scenario_args(p_setup, lays_out=True)
-    p_setup.add_argument("--show-output", action="store_true", help=SHOW_OUTPUT_HELP)
+    p_setup.add_argument("-s", "--show-output", action="store_true", help=SHOW_OUTPUT_HELP)
     p_run = sub.add_parser(
         "run", help="setup, then stop daemons, run the steps, stop daemons",
         description="Set up, then stop daemons, run the steps, and stop daemons again. With --project or setup.project, "
@@ -3024,7 +3033,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--tail", type=_tail_arg, default=30, metavar="N",
                        help="how many log lines to show after an unexpected check, a failed wrapper install, or a failed "
                             "[BEF] daemon stop (default: 30)")
-    p_run.add_argument("--show-output", action="store_true", help=RUN_SHOW_OUTPUT_HELP)
+    p_run.add_argument("-s", "--show-output", action="store_true", help=RUN_SHOW_OUTPUT_HELP)
     p_run.add_argument("--keep-daemons", action="store_true", help="do not stop Gradle daemons before or after the steps")
     p_run.add_argument("--trace", action="store_true",
                        help="record a build operation trace for each run.gradle step, as step-NN-ops-log.txt in the "
@@ -3072,6 +3081,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _bundled_short_options(token: str) -> bool:
+    """Whether a token is one dash and more than one letter, other than zip's -oPATH or a negative number. Left to
+    argparse, -show-output would be read as -s -h (help, exit 0) on Python 3.14 and newer. Short options come one to
+    a token, so -ss is refused as well."""
+    return (len(token) > 2 and token[0] == "-" and token[1] != "-" and not token.startswith("-o")
+            and not re.fullmatch(r"-\d+(\.\d*)?|-\.\d+", token))
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):        # a character the console cannot show is escaped, never a traceback
         if hasattr(stream, "reconfigure"):
@@ -3082,6 +3099,9 @@ def main(argv: list[str] | None = None) -> int:
     if "--" in argv:                       # split before argparse: everything after -- is for the Gradle steps
         cut = argv.index("--")
         argv, gradle_args = argv[:cut], argv[cut + 1:]
+    for token in argv:                     # one dash, more than one letter: a typo of a long option, never a short one
+        if _bundled_short_options(token):
+            parser.error(f"unrecognized arguments: {token}")
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
