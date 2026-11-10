@@ -2095,6 +2095,40 @@ class CliTest(GustCase):
         self.assertEqual((code, err), (gs.EXIT_PASS, ""))
         self.assertIn("usage: gust.py", out)                                          # the general help, not a "None runs no Gradle step" error
 
+    def test_s_is_short_for_show_output(self):
+        s = self.scenario_file('name = "a"\n[[steps]]\nrun.gradle = "help"')
+        for flag in ("-s", "--show-output"):
+            code, out, _ = self.cli("run", str(s), "--gradle", "gecho", "--keep-daemons", flag)
+            self.assertEqual(code, gs.EXIT_PASS, flag)
+            self.assertIn(f"{rule('step-01.log')}\n{home_arg()} help\n{CLOSING}\n", out, flag)
+            self.assertIn("exit: pass, as expected\n", out, flag)                     # every check, as with --show-output
+            self.assertTrue(gs.build_parser().parse_args(["setup", str(s), flag]).show_output, flag)
+        for command in ("run", "setup"):
+            _, out, _ = self.cli("help", command)
+            self.assertIn("-s, --show-output", out, command)
+        # after --, -s is Gradle's (its --stacktrace), not gust's: onto the command, and no output shown
+        code, out, _ = self.cli("run", str(s), "--gradle", "gecho", "--keep-daemons", "--json", "--", "-s")
+        self.assertEqual(code, gs.EXIT_PASS)
+        self.assertIn("$ gecho help -s\nEXPECTED: PASS (exit=0) in ", out)
+        self.assertNotIn("-----", out)
+        last = json.loads(out.rstrip("\n").splitlines()[-1])
+        self.assertEqual((last["gradle_args"], last["steps"][0]["command"]), (["-s"], "gecho help -s"))
+
+    def test_abbreviated_long_options_are_refused(self):
+        s = self.scenario_file('[[steps]]\nrun.shell = "true"')
+        for argv in (["run", str(s), "--s"], ["run", str(s), "--show"], ["run", str(s), "--keep"],
+                     ["setup", str(s), "--show"], ["check", str(s), "--js"]):
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+                gs.main(argv)
+            self.assertEqual(cm.exception.code, gs.EXIT_ERROR, argv)
+            self.assertIn(f"ERROR: unrecognized arguments: {argv[-1]}\n", err.getvalue(), argv)
+        self.assertFalse((self.tmp / "s.out").exists())                              # nothing ran
+        parser = gs.build_parser()
+        self.assertFalse(parser.allow_abbrev)
+        for name, sub in parser.parse_args([])._subparsers.items():
+            self.assertFalse(sub.allow_abbrev, name)                                  # each command's own options too
+
     def test_a_scenario_that_is_not_utf8_is_refused(self):
         text = '[[steps]]\nwrite."a.txt" = "caf\u00e9"\n'
         for encoding in ("latin-1", "utf-16"):                                          # utf-16: PowerShell 5's >

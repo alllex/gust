@@ -7,9 +7,9 @@ Write a Gradle user scenario as one TOML file, then run it.
 A scenario holds the files of a Gradle project and the steps to run against it:
 Gradle invocations, shell commands, and file edits in between. The project is
 written to disk and the steps run in order, until the first check that comes
-out unexpected. Gradle output goes to log files, and
-with `--show-output` to your terminal too. For agents there are fixed exit
-codes, a JSON summary, and `spec` for the whole file format.
+out unexpected. Gradle output goes to log files, and with `--show-output` (`-s`)
+to your terminal too. For agents there are fixed exit codes, a JSON summary,
+and `spec` for the whole file format.
 
 ## Quick start
 
@@ -82,11 +82,22 @@ out:      /work/loop.out
 scenario: PASS, 3/3 steps
 ```
 
+To see each step's output as it runs, and every check under its step line, the
+ones that came out as expected too, add `-s`, short for `--show-output`:
+
+```
+gust run loop.toml -s
+```
+
+The output stays in the logs unless asked for, which suits agents; `-s` is the
+short way to see it at the terminal.
+
 Other commands:
 
 ```
 gust check loop.toml         # validate it and settle the Gradle binary, run nothing
 gust setup loop.toml         # set the project up, run nothing
+gust setup loop.toml -s      # the same, with the wrapper install's output
 gust stop-daemons loop.toml  # stop the daemons of the project's Gradle
 gust flat loop.toml          # print it with setup.layout.base inlined
 gust zip loop.toml           # write loop.zip: the project, and the steps to run by hand
