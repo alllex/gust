@@ -2116,13 +2116,31 @@ class CliTest(GustCase):
 
     def test_abbreviated_long_options_are_refused(self):
         s = self.scenario_file('[[steps]]\nrun.shell = "true"')
-        for argv in (["run", str(s), "--s"], ["run", str(s), "--show"], ["run", str(s), "--keep"],
-                     ["setup", str(s), "--show"], ["check", str(s), "--js"]):
-            err = io.StringIO()
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+        explicit = "argument -s/--show-output: ignored explicit argument '1'"
+        for argv, message in (
+                (["run", str(s), "--s"], None), (["run", str(s), "--show"], None), (["run", str(s), "--keep"], None),
+                (["setup", str(s), "--show"], None), (["check", str(s), "--js"], None),
+                # one dash: not -s -h (help, exit 0 on Python 3.14 and newer), and short options one to a token
+                (["run", str(s), "-show-output"], None), (["run", str(s), "-show"], None), (["run", str(s), "-sh"], None),
+                (["setup", str(s), "-sh"], None), (["run", str(s), "-ss"], None),
+                (["run", str(s), "-show", "--", "-sh"], "unrecognized arguments: -show"),      # only gust's own are checked
+                (["run", str(s), "--show-output=1"], explicit)):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
                 gs.main(argv)
             self.assertEqual(cm.exception.code, gs.EXIT_ERROR, argv)
-            self.assertIn(f"ERROR: unrecognized arguments: {argv[-1]}\n", err.getvalue(), argv)
+            self.assertIn(f"ERROR: {message or f'unrecognized arguments: {argv[-1]}'}\n", err.getvalue(), argv)
+            self.assertEqual(out.getvalue(), "", argv)                                # no help printed
+        # what stays: - for stdin, zip's -oPATH, and a negative number to its option's own check
+        code, out, _ = self.cli("run", "-", "-s", "--keep-daemons", stdin='[[steps]]\nrun.shell = "echo body"\n')
+        self.assertEqual(code, gs.EXIT_PASS)
+        self.assertIn("body\n", out)
+        code, out, _ = self.cli("zip", str(s), f"-o{self.tmp / 'o.zip'}")
+        self.assertEqual((code, out), (gs.EXIT_PASS, f"{self.tmp / 'o.zip'}\n"))
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            gs.main(["run", str(s), "--tail", "-10"])
+        self.assertIn("--tail must be 0 or more", err.getvalue())
         self.assertFalse((self.tmp / "s.out").exists())                              # nothing ran
         parser = gs.build_parser()
         self.assertFalse(parser.allow_abbrev)

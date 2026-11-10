@@ -414,13 +414,13 @@ Commands
                                   With --json, the summary of the scenario is printed as one JSON
                                   object on the last line; see JSON for its schema. It has no
                                   result: check exits 0 or reports the error.
-  setup SCENARIO [--out DIR | --tmp] [--gradle BIN|VERSION] [--gradle-user-home DIR] [-s | --show-output]
+  setup SCENARIO [--out DIR | --tmp] [--gradle BIN|VERSION] [--gradle-user-home DIR] [-s, --show-output]
                                   lay the project out and, with a version in play, install its
                                   wrapper; no step runs. Ends in the footer (see Console): the out:
                                   line, and after a failed install `scenario: ERROR at [WRP]`.
                                   Refused in place.
   run SCENARIO [--out DIR | --tmp] [--gradle BIN|VERSION] [--gradle-user-home DIR] [--project DIR]
-               [--json] [--tail N] [-s | --show-output] [--keep-daemons] [--trace] [-- GRADLE_ARGS ...]
+               [--json] [--tail N] [-s, --show-output] [--keep-daemons] [--trace] [-- GRADLE_ARGS ...]
                                   setup, then stop daemons, run the steps, stop daemons
   stop-daemons SCENARIO [--out DIR] [--gradle BIN] [--gradle-user-home DIR] [--project DIR]
                                   run '<gradle> --stop' in <out>/project, or in the project dir
@@ -436,8 +436,9 @@ Commands
 
 With --out DIR, the out dir is DIR; with --tmp it is under /tmp (see Out dir).
 With --project DIR, an existing project dir is used in place (see In place).
--s is short for --show-output. A long option is accepted only in full: an
-abbreviation such as --show is a usage error.
+-s is short for --show-output; Gradle's own -s (--stacktrace) goes after --:
+`gust run x.toml -- -s`. A long option is accepted only in full, and a short
+one only on its own: --show and -sh are usage errors.
 
 --gradle takes a binary or a version, read in this order:
   1. A value with a "/" is a path to a binary. ./gradlew (or any ./path) is
@@ -3080,6 +3081,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _bundled_short_options(token: str) -> bool:
+    """Whether a token is one dash and more than one letter, other than zip's -oPATH or a negative number. Left to
+    argparse, -show-output would be read as -s -h (help, exit 0) on Python 3.14 and newer. Short options come one to
+    a token, so -ss is refused as well."""
+    return (len(token) > 2 and token[0] == "-" and token[1] != "-" and not token.startswith("-o")
+            and not re.fullmatch(r"-\d+(\.\d*)?|-\.\d+", token))
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):        # a character the console cannot show is escaped, never a traceback
         if hasattr(stream, "reconfigure"):
@@ -3090,6 +3099,9 @@ def main(argv: list[str] | None = None) -> int:
     if "--" in argv:                       # split before argparse: everything after -- is for the Gradle steps
         cut = argv.index("--")
         argv, gradle_args = argv[:cut], argv[cut + 1:]
+    for token in argv:                     # one dash, more than one letter: a typo of a long option, never a short one
+        if _bundled_short_options(token):
+            parser.error(f"unrecognized arguments: {token}")
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
